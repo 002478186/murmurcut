@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, pickKeyword, planBroll, toSegments, emphasisIndex, topicOf } from './captions.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, pickKeyword, planBroll, toSegments, emphasisIndex, topicOf, isAbstract } from './captions.js';
 
 const words = toWords([
   { text: ' Hello', timestamp: [0, 0.4] },
@@ -55,6 +55,14 @@ assert.equal(emphasisIndex(toWords([{ text: ' the', timestamp: [0, 1] }, { text:
 assert.equal(emphasisIndex(toWords([{ text: ' so', timestamp: [0, 1] }, { text: ' really', timestamp: [1, 2] }])), 1);
 assert.equal(toSegments(words.filter(w => !w.cut)).length, 3);
 
-assert.equal(topicOf(toWords('Modern Warfare 4 Man, look at this, Mumbai Mission'.split(' ').map((text, i) => ({ text, timestamp: [i, i + 1] })))), 'Modern Warfare');
+assert.equal(topicOf(toWords('Modern Warfare 4 Man, look at this, Mumbai Mission'.split(' ').map((text, i) => ({ text, timestamp: [i, i + 1] })))), 'Modern Warfare 4');
+
+assert.equal(pickKeyword('Modern Warfare 4 Man, look at this'), 'Modern Warfare 4');
+const meta = planBroll([{ start: 3, end: 6, text: 'After review, Metacritic gave 84, campaign' }])[0];
+assert.deepEqual([meta.query, meta.label, meta.context], ['Metacritic', 'Metacritic 84', 'After review, Metacritic gave 84, campaign']);
+
+assert.ok(isAbstract('American review aggregator website'));
+assert.ok(!isAbstract('Home video game console by Sony'));
+assert.ok(!isAbstract('Capital of Maharashtra, India'));
 
 console.log('ok');

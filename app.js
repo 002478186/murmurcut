@@ -1,4 +1,4 @@
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf } from './captions.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract } from './captions.js';
 import { PRESETS, drawCaption, drawBroll, drawCover } from './render.js';
 
 const $ = id => document.getElementById(id);
@@ -7,7 +7,7 @@ const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'modu
 const PX = 60; // timeline pixels per second
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-let file, topic = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
+let file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
 
 const status = text => ($('status').textContent = text);
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -105,7 +105,17 @@ $('transcribe').onclick = async () => {
   worker.postMessage({ audio, language, model: $('model').value, translate: language !== 'english' && $('capLang').value === 'english' }, [audio.buffer]);
 };
 
+// Photo ranking requests share the worker with transcription; replies are matched by id.
+const pending = new Map();
+let rankId = 0;
+const rankTexts = (queries, texts) => new Promise((resolve, reject) => {
+  const id = ++rankId;
+  pending.set(id, d => (d.error ? reject(new Error(d.error)) : resolve(d.scores)));
+  worker.postMessage({ type: 'rank', id, queries, texts });
+});
+
 worker.onmessage = ({ data }) => {
+  if (data.type === 'ranked') { pending.get(data.id)?.(data); pending.delete(data.id); return; }
   if (data.type === 'progress') { $('progress').value = data.progress / 100; return; }
   if (data.type === 'status') { $('progress').removeAttribute('value'); return status(data.text); }
   $('progress').hidden = true;
@@ -114,7 +124,8 @@ worker.onmessage = ({ data }) => {
   const ws = toWords(data.chunks);
   lines = groupWords(ws);
   topic = topicOf(ws);
-  brolls = planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, id: nextId++, options: [], pick: 0 }));
+  brolls = planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, planned: b.mode, id: nextId++, options: [], pick: 0 }));
+  topicInfo = genericPool = null;
   updateCuts();
   renderAll();
   $('export').disabled = $('srt').disabled = $('addBroll').disabled = !lines.length;
@@ -182,32 +193,77 @@ async function getJson(url) {
 }
 
 // Wikipedia knows named things (PS5, Mumbai); only free images come back by default.
-async function wikiPhotos(q) {
-  const d = await getJson(`https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrlimit=5&prop=pageimages&piprop=thumbnail|name&pithumbsize=960&gsrsearch=${encodeURIComponent(q)}`);
-  return Object.values(d.query?.pages ?? {}).sort((a, c) => a.index - c.index).filter(p => p.thumbnail)
-    .map(p => ({ src: p.thumbnail.source, credit: `"${p.title}" photo via Wikimedia Commons: https://commons.wikimedia.org/wiki/File:${encodeURIComponent(p.pageimage)}` }));
+async function wikiPages(q, limit = 5) {
+  const d = await getJson(`https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrlimit=${limit}&prop=pageimages|description&piprop=thumbnail|name&pithumbsize=960&gsrsearch=${encodeURIComponent(q)}`);
+  return Object.values(d.query?.pages ?? {}).sort((a, c) => a.index - c.index);
 }
+const toPhotos = pages => pages.filter(p => p.thumbnail).map(p => ({
+  src: p.thumbnail.source,
+  about: `${p.title}: ${p.description ?? ''}`,
+  credit: `"${p.title}" photo via Wikimedia Commons: https://commons.wikimedia.org/wiki/File:${encodeURIComponent(p.pageimage)}`,
+}));
+const wikiPhotos = async q => toPhotos(await wikiPages(q));
 
 // Openverse covers everyday things with Creative Commons photos.
 async function openversePhotos(q) {
   const d = await getJson(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(q)}&page_size=10&license_type=commercial&mature=false`);
-  return d.results.map(o => ({ src: o.thumbnail, credit: `"${o.title || 'Untitled'}" by ${o.creator || 'unknown'}, ${o.license.toUpperCase()} ${o.license_version ?? ''}, via Openverse: ${o.foreign_landing_url}` }));
+  return d.results.map(o => ({
+    src: o.thumbnail,
+    about: `${o.title ?? ''} ${(o.tags ?? []).slice(0, 8).map(t => t.name).join(' ')}`,
+    credit: `"${o.title || 'Untitled'}" by ${o.creator || 'unknown'}, ${o.license.toUpperCase()} ${o.license_version ?? ''}, via Openverse: ${o.foreign_landing_url}`,
+  }));
 }
+
+// What the topic is ("Call of Duty: Modern Warfare 4: 2026 video game") and its domain ("video game"),
+// so an ambiguous word like DMZ is read in the video's world, not the dictionary's.
+async function loadTopic() {
+  if (topicInfo || !topic) return;
+  const p = (await wikiPages(topic, 1).catch(() => []))[0];
+  const desc = p?.description ?? '';
+  topicInfo = { about: p ? `${p.title}: ${desc}` : topic, domain: desc.replace(/\b\d{4}s?\b/g, '').trim().split(/\s+/).slice(-2).join(' ') };
+  if (topicInfo.domain) genericPool = openversePhotos(topicInfo.domain).then(r => r.map(o => ({ ...o, generic: true })), () => []);
+}
+
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const MIN_FIT = 0.3; // below this nothing found fits what was said, so a text card beats a wrong photo
 
 async function search(b) {
   b.note = 'Searching…';
   renderBrolls();
-  // Exact name first (PS5 -> PlayStation 5), then with the video's topic for ambiguous words, then everyday photos.
-  const queries = [wikiPhotos(b.query), topic && !b.query.includes(topic) && wikiPhotos(`${b.query} ${topic}`), openversePhotos(b.query)].filter(Boolean);
-  const results = await Promise.allSettled(queries);
+  await loadTopic();
+  const q = b.query;
+  const exact = wikiPages(q);
+  const results = await Promise.allSettled([exact.then(toPhotos), topic && !q.includes(topic) && wikiPhotos(`${q} ${topic}`), openversePhotos(q), genericPool].filter(Boolean));
   const seen = new Set();
-  b.options = results.flatMap(r => (r.status === 'fulfilled' ? r.value : [])).filter(o => !seen.has(o.src) && seen.add(o.src));
+  let pool = results.flatMap(r => (r.status === 'fulfilled' ? r.value : [])).filter(o => o.src && !seen.has(o.src) && seen.add(o.src));
+  const context = b.context || q;
+  try {
+    // Score each photo against the sentence, and against the sentence with the keyword hidden plus the topic.
+    // The second view is what tells "DMZ, the game mode" apart from "DMZ, the border".
+    const masked = `${context.replace(new RegExp(escapeRe(q), 'gi'), 'it')} (${topicInfo?.about ?? ''})`;
+    const [plain, hidden] = await rankTexts([context, masked], [...pool.map(o => o.about), topicInfo?.domain || '']);
+    const onTopic = topicInfo?.domain && plain.at(-1) > MIN_FIT; // generic topic photos only for sentences about the topic
+    pool = pool.map((o, i) => ({ ...o, fit: (plain[i] + hidden[i]) / 2 })).filter(o => onTopic || !o.generic).sort((x, y) => y.fit - x.fit);
+  } catch (e) {
+    console.warn('Photo ranking unavailable, keeping search order:', e.message);
+    pool = pool.filter(o => !o.generic);
+  }
+  const top = (await exact.catch(() => []))[0];
+  const abstract = top && top.title.toLowerCase().includes(q.toLowerCase()) && isAbstract(top.description);
+  b.options = pool;
   b.pick = 0;
-  if (b.options.length) await usePick(b);
-  else {
-    b.img = null;
+  const fits = pool.length && (pool[0].fit ?? 1) >= MIN_FIT;
+  if (pool.length) await usePick(b);
+  else b.img = null;
+  if (fits && b.img && !abstract) {
+    if (b.mode === 'text') b.mode = b.planned ?? 'full';
+  } else {
+    b.mode = 'text';
     const err = results.find(r => r.status === 'rejected')?.reason?.message;
-    b.note = err === 'Failed to fetch' ? 'The photo search is unreachable. Check your connection.' : err ?? `No free photos for "${b.query}". Try a broader word, or upload your own.`;
+    b.note = abstract ? `${top.title} is ${/^[aeiou]/i.test(top.description) ? 'an' : 'a'} ${top.description[0].toLowerCase() + top.description.slice(1)}, which a photo can't really show, so this is a text card. Pick a photo layout to use the closest photo anyway.`
+      : err === 'Failed to fetch' ? 'The photo search is unreachable, so this shows as a text card.'
+      : pool.length ? 'No photo fitted what you said, so this shows as a text card. Pick a photo layout to use the closest one anyway.'
+      : `No free photos for "${q}", so this shows as a text card. Try another word, or upload your own.`;
   }
   renderBrolls();
   renderTimeline();
@@ -215,22 +271,22 @@ async function search(b) {
 
 async function searchAll() {
   for (const b of brolls) if (b.query) await search(b); // one at a time, to stay inside the anonymous rate limits
-  const found = brolls.filter(b => b.img).length;
-  status(`${lines.length} caption lines and ${found} of ${brolls.length} b-roll photos ready. Play it, then export.`);
+  const found = brolls.filter(b => b.img && b.mode !== 'text').length;
+  status(`${lines.length} caption lines, ${found} b-roll photos and ${brolls.length - found} text cards ready. Play it, then export.`);
 }
 
-const MODE_LABEL = { full: 'Full screen', card: 'Photo card', blur: 'Blurred behind' };
+const MODE_LABEL = { full: 'Full screen', card: 'Photo card', blur: 'Blurred behind', text: 'Text card' };
 let brollEls = [];
 function renderBrolls() {
   brollEls = brolls.map(b => {
-    const thumb = el('img', { className: 'thumb', alt: b.img ? `Photo for ${b.query}` : '' });
-    if (b.img) thumb.src = b.img.src;
+    const thumb = el('img', { className: 'thumb', alt: b.img && b.mode !== 'text' ? `Photo for ${b.query}` : '' });
+    if (b.img && b.mode !== 'text') thumb.src = b.img.src;
     const mode = el('select', {}, ...Object.entries(MODE_LABEL).map(([v, t]) => el('option', { value: v, textContent: t, selected: v === b.mode })));
     mode.setAttribute('aria-label', 'How the photo appears');
-    mode.onchange = () => (b.mode = mode.value);
+    mode.onchange = () => { b.mode = mode.value; renderBrolls(); renderTimeline(); };
     const q = el('input', { type: 'text', value: b.query, placeholder: 'What should the photo show?' });
     q.setAttribute('aria-label', 'Photo search');
-    q.onchange = () => { b.query = q.value.trim(); if (b.query) search(b); };
+    q.onchange = () => { b.query = b.label = q.value.trim(); if (b.query) search(b); };
     const swap = el('button', { type: 'button', className: 'btn ghost', textContent: 'Swap photo', disabled: b.options.length < 2 });
     swap.onclick = async () => { b.pick = (b.pick + 1) % b.options.length; await usePick(b); renderBrolls(); };
     const up = el('input', { type: 'file', accept: 'image/*', hidden: true });
@@ -254,13 +310,14 @@ function renderBrolls() {
   });
   $('brolls').replaceChildren(...brollEls);
   if (!brolls.length && lines.length) $('brolls').append(el('li', { className: 'hint', textContent: 'No b-roll yet. Move the playhead and add one.' }));
-  $('credits').value = brolls.map(b => b.credit).filter(Boolean).join('\n');
+  $('credits').value = brolls.filter(b => b.mode !== 'text').map(b => b.credit).filter(Boolean).join('\n');
 }
 
 $('addBroll').onclick = () => {
   const t = video.currentTime;
   const line = lines.find(l => t >= l.start && t < l.end) ?? lines.find(l => l.start >= t);
-  const b = { id: nextId++, start: t, end: Math.min(t + 2.5, video.duration), query: line ? pickKeyword(line.words.map(w => w.text).join(' ')) ?? '' : '', mode: 'full', options: [], pick: 0 };
+  const b = { id: nextId++, start: t, end: Math.min(t + 2.5, video.duration), query: line ? pickKeyword(line.words.map(w => w.text).join(' ')) ?? '' : '', context: line?.words.map(w => w.text).join(' '), mode: 'full', planned: 'full', options: [], pick: 0 };
+  b.label = b.query;
   brolls = [...brolls, b].sort((x, y) => x.start - y.start);
   renderBrolls();
   renderTimeline();
@@ -279,7 +336,7 @@ function renderTimeline() {
   $('trackCaps').replaceChildren(
     ...lines.map(l => block(l.start, l.end, l.words.map(w => w.text).join(' '), () => { seek(l.start); showTab('captions'); })),
     ...cuts.map(([a, b]) => { const z = el('div', { className: 'cutzone' }); z.style.left = `${a * PX}px`; z.style.width = `${(b - a) * PX}px`; return z; }));
-  $('trackBroll').replaceChildren(...brolls.map(b => block(b.start, b.end, b.img ? b.query : `${b.query || 'b-roll'} (no photo)`, () => { seek(b.start); showTab('broll'); })));
+  $('trackBroll').replaceChildren(...brolls.map(b => block(b.start, b.end, b.mode === 'text' ? `${b.label || b.query} (text)` : b.img ? b.query : `${b.query || 'b-roll'} (no photo)`, () => { seek(b.start); showTab('broll'); })));
 }
 $('tracks').onclick = e => {
   if (e.target.closest('.block')) return;

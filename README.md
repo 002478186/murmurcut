@@ -72,7 +72,7 @@ npm test
 - Export runs in real time and needs the tab in the foreground, because it records the canvas while the video plays.
 - The SRT export uses the original timings, so it matches the uncut video.
 - Whisper makes mistakes on names and slang, and translation can mishear words ("Skyland" for "skyline"). Fix them in the transcript.
-- B-roll picks the right *topic* most of the time, but free photo libraries do not have everything. Game modes and memes are the hardest. Use Swap photo, change the search word, or upload your own.
+- B-roll photos are ranked by meaning with a small on-device model (all-MiniLM-L6-v2). When nothing fits, or the keyword is something a photo cannot show (a website, a company, a score), you get a text card such as "Metacritic 84" instead of a wrong photo. Free photo libraries do not have everything, so use Swap photo, change the search word, or upload your own.
 - Without WebGPU, the Accurate model on a CPU can take several minutes per minute of video.
 
 ## Not included

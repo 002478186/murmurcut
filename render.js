@@ -141,15 +141,34 @@ export function drawCover(ctx, src, sw, sh, x, y, w, h, zoom = 1) {
   ctx.drawImage(src, x + (w - sw * k) / 2, y + (h - sh * k) / 2, sw * k, sh * k);
 }
 
-// item: { start, end, mode, query, img }
+// item: { start, end, mode, query, label, img }
 export function drawBroll(ctx, W, H, item, t, video) {
   const img = item.img;
-  if (!img || t < item.start || t >= item.end) return;
+  if ((!img && item.mode !== 'text') || t < item.start || t >= item.end) return;
   const d = item.end - item.start, age = t - item.start;
   const fade = Math.min(1, age / 0.2, (item.end - t) / 0.2);
   ctx.save();
   ctx.globalAlpha = fade;
-  if (item.mode === 'full') {
+  if (item.mode === 'text') {
+    // No photo fits, so the words become the visual: the speaker blurred out, the keyword set large.
+    ctx.filter = 'blur(18px) brightness(0.7)';
+    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, 1.1);
+    ctx.filter = 'none';
+    const label = item.label || item.query;
+    let s = W * 0.17;
+    ctx.font = `italic 400 ${s}px "Instrument Serif", ${DEVA}, serif`;
+    s *= Math.min(1, (W * 0.84) / ctx.measureText(label).width);
+    const k = 0.9 + 0.1 * Math.min(1, age / 0.25);
+    ctx.translate(W / 2, H * 0.4);
+    ctx.scale(k, k);
+    ctx.font = `italic 400 ${s}px "Instrument Serif", ${DEVA}, serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = s * 0.3;
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, 0, 0);
+  } else if (item.mode === 'full') {
     ctx.beginPath();
     ctx.rect(0, 0, W, H);
     ctx.clip();

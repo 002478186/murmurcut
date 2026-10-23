@@ -20,9 +20,26 @@ async function load(model) {
   return { asr: await pipeline('automatic-speech-recognition', model, { progress_callback }), gpu: false };
 }
 
-// data: { audio, language, model, translate }
-// Replies with word chunks for captions, plus English sentence segments to pick b-roll from when the captions are not English.
-self.onmessage = async ({ data: { audio, language, model, translate } }) => {
+// A 23 MB sentence-meaning model, used to rank b-roll photos by how well they fit what was said.
+let embedder;
+async function rank({ id, queries, texts }) {
+  try {
+    embedder ??= await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+    const vecs = (await embedder([...queries, ...texts], { pooling: 'mean', normalize: true })).tolist();
+    const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
+    const q = vecs.slice(0, queries.length);
+    // One similarity row per query, against every text.
+    self.postMessage({ type: 'ranked', id, scores: q.map(v => vecs.slice(queries.length).map(t => dot(v, t))) });
+  } catch (e) {
+    self.postMessage({ type: 'ranked', id, error: e.message });
+  }
+}
+
+// data: { audio, language, model, translate } to transcribe, or { type: 'rank', ... } to score photo descriptions.
+// Transcription replies with word chunks for captions, plus English sentence segments to pick b-roll from when the captions are not English.
+self.onmessage = async ({ data }) => {
+  if (data.type === 'rank') return rank(data);
+  const { audio, language, model, translate } = data;
   try {
     asrs[model] ??= await load(model);
     const { asr, gpu } = asrs[model];

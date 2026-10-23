@@ -69,7 +69,8 @@ const STOP = new Set(('a an the and or but so if then than that this these those
   'after somewhere tell thank thanks comment man little').split(' '));
 
 // Scores words by how picturable they are: names, acronyms (PS5, DMZ) and long nouns beat filler.
-// Returns { word, score, idx } for the best one in the whitespace-split text, or null.
+// Returns { word, score, idx, num } for the best one in the whitespace-split text, or null.
+// `num` is a number said right next to it ("Metacritic gave 84"), for text cards.
 function scoreKeyword(text) {
   const toks = text.split(/\s+/).map(t => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''));
   const ok = t => t && !STOP.has(t.toLowerCase());
@@ -81,9 +82,13 @@ function scoreKeyword(text) {
     if (/^\p{Lu}[\p{Lu}\d]+$/u.test(t)) score += 8;
     else if (isProper(t)) score += 6;
     if (/\d/.test(t) && /\p{L}/u.test(t)) score += 6;
-    if (isProper(t) && isProper(toks[i + 1] ?? '')) [word, score] = [`${t} ${toks[i + 1]}`, score + 3];
-    if (!best || score > best.score) best = { word, score, idx: i };
+    let j = i;
+    if (isProper(t) && isProper(toks[i + 1] ?? '')) [word, score, j] = [`${t} ${toks[i + 1]}`, score + 3, i + 1];
+    // Keep a sequel number with its name: "Modern Warfare 4" is a game, "Modern Warfare" is a military term.
+    if (j > i && /^\d{1,4}$/.test(toks[j + 1] ?? '')) [word, j] = [`${word} ${toks[j + 1]}`, j + 1];
+    if (!best || score > best.score) best = { word, score, idx: i, end: j };
   });
+  if (best) best.num = toks.slice(Math.max(0, best.idx - 2), best.end + 4).find((t, k) => /^\d+$/.test(t) && !best.word.includes(t));
   return best;
 }
 
@@ -92,6 +97,10 @@ export const pickKeyword = text => scoreKeyword(text)?.word ?? null;
 
 // What the whole video is about, judged from its opening: creators name the topic up front.
 export const topicOf = words => pickKeyword(words.slice(0, 30).map(w => w.text).join(' '));
+
+// Websites, companies, scores: things a photo can't honestly show, so their name (and number) works better as text.
+const ABSTRACT = /\b(website|web site|company|corporation|organi[sz]ation|aggregator|platform|service|software|app|application|brand|magazine|publisher|award|index|rating|search engine|social network)\b/i;
+export const isAbstract = description => ABSTRACT.test(description ?? '');
 
 export const BROLL_MODES = ['full', 'card', 'blur'];
 
@@ -107,7 +116,8 @@ export function planBroll(segments, { minGap = 2.5, dur = 2.5, start = 1.5 } = {
     const at = s.words?.[k.idx]?.start ?? s.start + ((s.end - s.start) * k.idx) / n;
     const from = Math.max(s.start, Math.min(at - 0.3, s.end - 0.8));
     const end = Math.min(s.end, from + dur);
-    if (from >= start && end - from >= 0.75) cands.push({ start: from, end, query: k.word, score: k.score });
+    const label = k.num ? `${k.word} ${k.num}` : k.word;
+    if (from >= start && end - from >= 0.75) cands.push({ start: from, end, query: k.word, label, context: s.text, score: k.score });
   }
   const picked = [];
   for (const c of cands.sort((a, b) => b.score - a.score))
