@@ -3,7 +3,7 @@ Import a local video,import,must,yes,yes,file picker and drag-drop
 Auto transcription with word timestamps,transcribe,must,yes,yes,Whisper via transformers.js in the browser
 Multi-language transcription,transcribe,should,yes,yes,multilingual whisper-base
 Animated word-by-word captions,captions,must,yes,yes,active word highlight
-Caption style presets,captions,must,yes,yes,4 original presets
+Caption style presets,captions,must,yes,yes,10 original presets incl. Spotlight keyword layout
 Caption size and position,captions,must,yes,yes,
 Uppercase toggle,captions,could,yes,yes,
 Edit caption text,transcript,must,yes,yes,timings redistributed when the word count changes
@@ -12,9 +12,16 @@ Remove filler words,smart-cuts,should,yes,yes,um/uh/erm/hmm/ah
 Remove silences,smart-cuts,should,yes,yes,threshold slider
 Export video with burned-in captions,export,must,yes,yes,MediaRecorder; mp4 where the browser supports it
 Export SRT,export,should,yes,yes,
-Translation,transcribe,could,yes,no,
+Translation,transcribe,could,yes,yes,speech to English captions via Whisper translate
 AI avatars,ai,skip,yes,no,needs proprietary models
 Eye contact correction,ai,skip,yes,no,needs proprietary models
 AI dubbing / voice clone,ai,skip,yes,no,needs proprietary models
 Music and sound library,assets,skip,yes,no,licensed content
 Accounts and cloud sync,platform,skip,yes,no,local-only by design
+AI b-roll from what is said,broll,must,yes,yes,keyword scoring + Wikipedia/Openverse photos
+B-roll layouts (full / card / blurred background),broll,should,yes,yes,
+Swap / upload / re-search b-roll,broll,should,yes,yes,
+Punch-in zoom,edit,should,yes,yes,every third line
+Timeline with caption and b-roll tracks,editor,should,yes,yes,
+Chat to edit,editor,could,yes,no,needs an LLM; not in-browser yet
+Stock video b-roll,broll,could,yes,no,photos only

@@ -4,71 +4,114 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>murmurcut</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23ffd400'/><rect x='6' y='19' width='20' height='5' rx='2' fill='%23111'/></svg>">
+  <meta name="description" content="Free, private AI captions, b-roll and jump cuts for talking-head videos. Runs in your browser.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23FFC53D'/><rect x='6' y='19' width='20' height='5' rx='2' fill='%2316121C'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Serif:ital@0;1&family=Noto+Sans+Devanagari:wght@400;700&display=swap">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header><h1>murmurcut</h1><p>Free AI captions and jump cuts. Runs in your browser, so your video never leaves your machine.</p></header>
-  <main>
-    <section class="stage">
+  <header class="bar">
+    <span class="brand">murmurcut</span>
+    <span id="fileName" class="file"></span>
+    <label for="file" class="btn ghost" id="changeVideo" hidden>Change video</label>
+    <button id="srt" class="btn ghost" type="button" disabled>Download .srt</button>
+    <button id="export" class="btn primary" type="button" disabled>Export video</button>
+  </header>
+
+  <main class="editor">
+    <section class="stage" aria-label="Preview">
       <label id="drop" class="drop">
         <input id="file" type="file" accept="video/*" hidden>
-        <span>Drop a video here or click to choose one</span>
+        <strong>Drop in a talking clip</strong>
+        <span>murmurcut adds the captions, b-roll and jump cuts. It all runs in this tab, so your video is never uploaded.</span>
+        <span class="btn primary">Choose a video</span>
       </label>
-      <canvas id="canvas" hidden aria-label="Video preview with captions"></canvas>
+      <canvas id="canvas" hidden aria-label="Video preview with captions and b-roll"></canvas>
       <video id="video" playsinline hidden></video>
-      <div id="controls" class="controls" hidden>
-        <button id="play" type="button">Play</button>
-        <input id="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Seek">
-        <span id="time">0:00</span>
-        <label for="file">Change video</label>
+      <p id="status" class="status" role="status"></p>
+      <progress id="progress" hidden></progress>
+    </section>
+
+    <section class="panel">
+      <nav class="tabs" role="tablist" aria-label="Editing tools">
+        <button role="tab" type="button" aria-selected="true" aria-controls="tab-captions" id="t-captions">Captions</button>
+        <button role="tab" type="button" aria-selected="false" aria-controls="tab-style" id="t-style">Style</button>
+        <button role="tab" type="button" aria-selected="false" aria-controls="tab-broll" id="t-broll">B-roll</button>
+        <button role="tab" type="button" aria-selected="false" aria-controls="tab-cuts" id="t-cuts">Cuts</button>
+      </nav>
+
+      <div role="tabpanel" id="tab-captions" aria-labelledby="t-captions" class="pane">
+        <div class="field-row">
+          <label>Spoken language
+            <select id="lang">
+              <option value="english">English</option><option value="hindi">Hindi / Hinglish</option>
+              <option value="spanish">Spanish</option><option value="french">French</option>
+              <option value="german">German</option><option value="portuguese">Portuguese</option>
+              <option value="italian">Italian</option><option value="japanese">Japanese</option>
+              <option value="korean">Korean</option><option value="chinese">Chinese</option>
+              <option value="arabic">Arabic</option><option value="russian">Russian</option>
+              <option value="urdu">Urdu</option><option value="bengali">Bengali</option>
+            </select>
+          </label>
+          <label>Captions in
+            <select id="capLang">
+              <option value="spoken">The spoken language</option>
+              <option value="english">English</option>
+            </select>
+          </label>
+        </div>
+        <label>Accuracy
+          <select id="model">
+            <option value="Xenova/whisper-base">Fast: smaller download</option>
+            <option value="Xenova/whisper-small">Accurate: bigger download, slower, best for translation</option>
+          </select>
+        </label>
+        <p class="hint" id="langHint"></p>
+        <button id="transcribe" class="btn primary wide" type="button" disabled>Generate captions and b-roll</button>
+        <ol id="lines" class="lines"></ol>
+      </div>
+
+      <div role="tabpanel" id="tab-style" aria-labelledby="t-style" class="pane" hidden>
+        <div id="presets" class="presets"></div>
+        <label>Size <input id="size" type="range" min="3" max="12" step="0.5" value="6"></label>
+        <label>Position <input id="pos" type="range" min="12" max="90" value="72"></label>
+        <label class="check"><input id="upper" type="checkbox" checked> Capital letters</label>
+        <label class="check"><input id="zoom" type="checkbox" checked> Punch-in zoom on every third line</label>
+      </div>
+
+      <div role="tabpanel" id="tab-broll" aria-labelledby="t-broll" class="pane" hidden>
+        <p class="hint">murmurcut picks a picture for the main things you talk about and finds a free photo for each one. Change any search, swap the photo or upload your own.</p>
+        <button id="addBroll" class="btn ghost wide" type="button" disabled>Add b-roll at the playhead</button>
+        <ol id="brolls" class="brolls"></ol>
+        <details class="credits">
+          <summary>Photo credits</summary>
+          <p class="hint">Photos come from Openverse under Creative Commons licences. Put these credits in your video description.</p>
+          <textarea id="credits" readonly rows="5" aria-label="Photo credits"></textarea>
+        </details>
+      </div>
+
+      <div role="tabpanel" id="tab-cuts" aria-labelledby="t-cuts" class="pane" hidden>
+        <label class="check"><input id="fillers" type="checkbox"> Remove filler words (um, uh)</label>
+        <label class="check"><input id="silences" type="checkbox"> Remove pauses longer than <output id="silOut">0.8</output> s</label>
+        <input id="silence" type="range" min="0.3" max="3" step="0.1" value="0.8" aria-label="Pause length to remove">
+        <p class="hint">To cut a single word, open Captions and click it. Cut parts show in red on the timeline.</p>
       </div>
     </section>
 
-    <aside>
-      <fieldset>
-        <legend>1. Transcribe</legend>
-        <label>Language
-          <select id="lang">
-            <option value="english">English</option><option value="hindi">Hindi</option>
-            <option value="spanish">Spanish</option><option value="french">French</option>
-            <option value="german">German</option><option value="portuguese">Portuguese</option>
-            <option value="italian">Italian</option><option value="japanese">Japanese</option>
-            <option value="korean">Korean</option><option value="chinese">Chinese</option>
-            <option value="arabic">Arabic</option><option value="russian">Russian</option>
-          </select>
-        </label>
-        <button id="transcribe" class="primary" type="button" disabled>Generate captions</button>
-        <progress id="progress" hidden></progress>
-        <p id="status" role="status"></p>
-      </fieldset>
-
-      <fieldset>
-        <legend>2. Style</legend>
-        <div id="presets" class="presets"></div>
-        <label>Size <input id="size" type="range" min="3" max="12" step="0.5" value="6"></label>
-        <label>Position <input id="pos" type="range" min="10" max="92" value="75"></label>
-        <label class="row"><input id="upper" type="checkbox" checked> UPPERCASE</label>
-      </fieldset>
-
-      <fieldset>
-        <legend>3. Smart cuts</legend>
-        <label class="row"><input id="fillers" type="checkbox"> Remove filler words (um, uh)</label>
-        <label class="row"><input id="silences" type="checkbox"> Remove silences longer than <output id="silOut">0.8</output>s</label>
-        <input id="silence" type="range" min="0.3" max="3" step="0.1" value="0.8" aria-label="Silence threshold">
-        <p class="hint">Click a word in the transcript to cut it.</p>
-      </fieldset>
-
-      <fieldset>
-        <legend>4. Export</legend>
-        <button id="export" class="primary" type="button" disabled>Export video</button>
-        <button id="srt" type="button" disabled>Download .srt</button>
-      </fieldset>
-    </aside>
-
-    <section class="transcript">
-      <h2>Transcript</h2>
-      <ol id="lines"><li class="hint">Captions will appear here.</li></ol>
+    <section class="timeline" aria-label="Timeline">
+      <div class="transport">
+        <button id="play" class="btn ghost" type="button" disabled>Play</button>
+        <span id="time" class="time">0:00 / 0:00</span>
+      </div>
+      <div id="scroller" class="scroller">
+        <div id="tracks" class="tracks">
+          <div class="track broll" id="trackBroll" aria-label="B-roll track"></div>
+          <div class="track caps" id="trackCaps" aria-label="Captions track"></div>
+          <div id="playhead" class="playhead"></div>
+        </div>
+      </div>
     </section>
   </main>
   <script type="module" src="app.js"></script>

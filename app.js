@@ -1,38 +1,53 @@
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt } from './captions.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf } from './captions.js';
+import { PRESETS, drawCaption, drawBroll, drawCover } from './render.js';
 
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d');
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+const PX = 60; // timeline pixels per second
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const PRESETS = {
-  pop: { name: 'Pop', font: '900 {s}px "Arial Black", Impact, sans-serif', fill: '#fff', stroke: '#000', active: '#ffd400', grow: 1.15 },
-  karaoke: { name: 'Karaoke', font: '800 {s}px system-ui, sans-serif', fill: '#fff', stroke: '#000', box: '#16a34a' },
-  minimal: { name: 'Minimal', font: '600 {s}px system-ui, sans-serif', fill: '#fff', bar: 'rgba(0,0,0,0.6)' },
-  neon: { name: 'Neon', font: '800 {s}px "Trebuchet MS", sans-serif', fill: '#a5f3fc', glow: '#22d3ee', active: '#f472b6' },
-};
-
-let file, lines = [], cuts = [], preset = 'pop', exporting = false, audioDest;
+let file, topic = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
 
 const status = text => ($('status').textContent = text);
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const words = () => lines.flatMap(l => l.words);
+const settings = () => ({ size: +$('size').value, pos: +$('pos').value, upper: $('upper').checked });
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+const seek = t => (video.currentTime = Math.max(0, Math.min(t, video.duration || 0)));
+
+// Canvas text does not trigger webfont loading, so ask for every face up front.
+const fontsReady = Promise.all(['400 20px Anton', '700 20px "Bricolage Grotesque"', '800 20px "Bricolage Grotesque"', 'italic 400 20px "Instrument Serif"', '700 20px "Noto Sans Devanagari"']
+  .map(f => document.fonts.load(f).catch(() => {})));
 
 function download(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
+  const a = el('a', { href: URL.createObjectURL(blob), download: name });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
+const baseName = () => file.name.replace(/\.[^.]+$/, '');
+
+// --- tabs ---
+const tabs = [...document.querySelectorAll('[role="tab"]')];
+function showTab(name) {
+  tabs.forEach(t => {
+    const on = t.id === `t-${name}`;
+    t.setAttribute('aria-selected', on);
+    $(t.getAttribute('aria-controls')).hidden = !on;
+  });
+}
+tabs.forEach(t => (t.onclick = () => showTab(t.id.slice(2))));
 
 // --- import ---
 function load(f) {
-  if (!f?.type.startsWith('video/')) return status('Please choose a video file.');
+  if (!f?.type.startsWith('video/')) return status('That file is not a video. Choose an MP4, MOV or WebM file.');
   file = f;
   lines = [];
+  brolls = [];
   cuts = [];
-  renderTranscript();
-  $('export').disabled = $('srt').disabled = true;
+  renderAll();
+  $('export').disabled = $('srt').disabled = $('addBroll').disabled = true;
+  $('fileName').textContent = f.name;
   video.src = URL.createObjectURL(f);
 }
 $('file').onchange = e => load(e.target.files[0]);
@@ -44,18 +59,34 @@ drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); load(e.d
 video.onloadedmetadata = () => {
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
-  $('seek').max = video.duration;
-  canvas.hidden = $('controls').hidden = false;
+  canvas.hidden = $('changeVideo').hidden = false;
   drop.hidden = true;
-  $('transcribe').disabled = false;
-  status(`Loaded ${file.name}. Next: generate captions.`);
+  $('transcribe').disabled = $('play').disabled = false;
+  renderTimeline();
+  seek(0); // decodes the first frame so the preview is not black
+  status('Choose the spoken language, then generate captions.');
 };
 video.onerror = () => status("This browser can't play that video. Try an MP4 (H.264) or WebM.");
+
+// --- language and model ---
+function syncLang() {
+  const foreign = $('lang').value !== 'english';
+  $('capLang').disabled = !foreign;
+  if (!foreign) $('capLang').value = 'spoken';
+  const english = foreign && $('capLang').value === 'english';
+  // Whisper small loops on Hindi transcription but translates it well; base gives romanised Hinglish.
+  $('model').value = english ? 'Xenova/whisper-small' : 'Xenova/whisper-base';
+  $('langHint').textContent = !foreign ? ''
+    : english ? 'Captions are translated to English. B-roll is picked from what you mean, whatever language you speak.'
+    : 'Hindi usually comes out romanised, as Hinglish in Latin letters. For the cleanest captions, choose English.';
+}
+$('lang').onchange = $('capLang').onchange = syncLang;
+syncLang();
 
 // --- transcribe ---
 $('transcribe').onclick = async () => {
   $('transcribe').disabled = true;
-  status('Decoding audio…');
+  status('Reading the audio…');
   const ac = new AudioContext({ sampleRate: 16000 }); // Whisper expects 16 kHz mono
   let buf;
   try {
@@ -67,10 +98,11 @@ $('transcribe').onclick = async () => {
     ac.close();
   }
   const audio = buf.getChannelData(0);
-  status('Loading speech model (first run downloads ~150 MB, then it is cached)…');
+  status('Downloading the speech model. This only happens the first time.');
   $('progress').hidden = false;
   $('progress').removeAttribute('value');
-  worker.postMessage({ audio, language: $('lang').value }, [audio.buffer]);
+  const language = $('lang').value;
+  worker.postMessage({ audio, language, model: $('model').value, translate: language !== 'english' && $('capLang').value === 'english' }, [audio.buffer]);
 };
 
 worker.onmessage = ({ data }) => {
@@ -79,124 +111,271 @@ worker.onmessage = ({ data }) => {
   $('progress').hidden = true;
   $('transcribe').disabled = false;
   if (data.type === 'error') return status(`Transcription failed: ${data.message}`);
-  lines = groupWords(toWords(data.chunks));
-  renderTranscript();
+  const ws = toWords(data.chunks);
+  lines = groupWords(ws);
+  topic = topicOf(ws);
+  brolls = planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, id: nextId++, options: [], pick: 0 }));
   updateCuts();
-  $('export').disabled = $('srt').disabled = !lines.length;
-  status(lines.length ? `${lines.length} caption lines. Pick a style, then export.` : 'No speech found in this video.');
+  renderAll();
+  $('export').disabled = $('srt').disabled = $('addBroll').disabled = !lines.length;
+  if (!lines.length) return status('No speech found in this video.');
+  status(`${lines.length} caption lines and ${brolls.length} b-roll moments. Finding photos…`);
+  searchAll();
 };
 
 // --- transcript ---
+let lineEls = [];
 function renderTranscript() {
-  if (!lines.length) return $('lines').replaceChildren(Object.assign(document.createElement('li'), { className: 'hint', textContent: 'Captions will appear here.' }));
-  $('lines').replaceChildren(...lines.map(l => {
-    const li = document.createElement('li');
-    const t = Object.assign(document.createElement('button'), { className: 't', type: 'button', textContent: fmt(l.start), onclick: () => (video.currentTime = l.start) });
-    t.setAttribute('aria-label', `Jump to ${fmt(l.start)}`);
-    const input = Object.assign(document.createElement('input'), { value: l.words.map(w => w.text).join(' ') });
+  lineEls = lines.map(l => {
+    const input = el('input', { value: l.words.map(w => w.text).join(' ') });
     input.setAttribute('aria-label', `Caption at ${fmt(l.start)}`);
-    input.onchange = () => { editLine(l, input.value); renderTranscript(); updateCuts(); };
-    const chips = Object.assign(document.createElement('div'), { className: 'chips' });
-    chips.append(...l.words.map(w => {
-      const c = Object.assign(document.createElement('button'), { type: 'button', className: 'chip' + (w.cut ? ' cut' : ''), textContent: w.text });
+    input.onchange = () => { editLine(l, input.value); updateCuts(); renderAll(); };
+    const chips = el('div', { className: 'chips' }, ...l.words.map(w => {
+      const c = el('button', { type: 'button', className: 'chip' + (w.cut ? ' cut' : ''), textContent: w.text, title: 'Click to cut this word from the video' });
       c.setAttribute('aria-pressed', w.cut);
-      c.title = 'Click to cut this word from the video';
-      c.onclick = () => { w.cut = !w.cut; c.classList.toggle('cut', w.cut); c.setAttribute('aria-pressed', w.cut); updateCuts(); };
+      c.onclick = () => { w.cut = !w.cut; c.classList.toggle('cut', w.cut); c.setAttribute('aria-pressed', w.cut); updateCuts(); renderTimeline(); };
       return c;
     }));
-    li.append(t, input, chips);
-    return li;
-  }));
+    const t = el('button', { className: 't', type: 'button', textContent: fmt(l.start), onclick: () => seek(l.start) });
+    t.setAttribute('aria-label', `Jump to ${fmt(l.start)}`);
+    return el('li', {}, t, input, chips);
+  });
+  $('lines').replaceChildren(...lineEls);
+}
+
+// --- b-roll ---
+function loadImg(src) {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.crossOrigin = 'anonymous'; // keeps the canvas exportable
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('That photo failed to load.'));
+    i.src = src;
+  });
+}
+
+async function usePick(b) {
+  // Some hosts fail; walk forward until one loads.
+  for (let tries = 0; tries < Math.min(4, b.options.length); tries++) {
+    const o = b.options[b.pick];
+    try {
+      b.img = await loadImg(o.src);
+      b.credit = o.credit;
+      b.note = '';
+      return;
+    } catch {
+      b.pick = (b.pick + 1) % b.options.length;
+    }
+  }
+  b.img = null;
+  b.note = 'None of the photos found would load. Try another search.';
+}
+
+async function getJson(url) {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(url);
+    if (r.ok) return r.json();
+    if (r.status === 429) throw new Error('Too many searches. Wait a minute, then search again.');
+    if (r.status < 500 || attempt) throw new Error(`The photo search failed (${r.status}).`);
+    await new Promise(res => setTimeout(res, 1500)); // one retry for server hiccups
+  }
+}
+
+// Wikipedia knows named things (PS5, Mumbai); only free images come back by default.
+async function wikiPhotos(q) {
+  const d = await getJson(`https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrlimit=5&prop=pageimages&piprop=thumbnail|name&pithumbsize=960&gsrsearch=${encodeURIComponent(q)}`);
+  return Object.values(d.query?.pages ?? {}).sort((a, c) => a.index - c.index).filter(p => p.thumbnail)
+    .map(p => ({ src: p.thumbnail.source, credit: `"${p.title}" photo via Wikimedia Commons: https://commons.wikimedia.org/wiki/File:${encodeURIComponent(p.pageimage)}` }));
+}
+
+// Openverse covers everyday things with Creative Commons photos.
+async function openversePhotos(q) {
+  const d = await getJson(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(q)}&page_size=10&license_type=commercial&mature=false`);
+  return d.results.map(o => ({ src: o.thumbnail, credit: `"${o.title || 'Untitled'}" by ${o.creator || 'unknown'}, ${o.license.toUpperCase()} ${o.license_version ?? ''}, via Openverse: ${o.foreign_landing_url}` }));
+}
+
+async function search(b) {
+  b.note = 'Searching…';
+  renderBrolls();
+  // Exact name first (PS5 -> PlayStation 5), then with the video's topic for ambiguous words, then everyday photos.
+  const queries = [wikiPhotos(b.query), topic && !b.query.includes(topic) && wikiPhotos(`${b.query} ${topic}`), openversePhotos(b.query)].filter(Boolean);
+  const results = await Promise.allSettled(queries);
+  const seen = new Set();
+  b.options = results.flatMap(r => (r.status === 'fulfilled' ? r.value : [])).filter(o => !seen.has(o.src) && seen.add(o.src));
+  b.pick = 0;
+  if (b.options.length) await usePick(b);
+  else {
+    b.img = null;
+    const err = results.find(r => r.status === 'rejected')?.reason?.message;
+    b.note = err === 'Failed to fetch' ? 'The photo search is unreachable. Check your connection.' : err ?? `No free photos for "${b.query}". Try a broader word, or upload your own.`;
+  }
+  renderBrolls();
+  renderTimeline();
+}
+
+async function searchAll() {
+  for (const b of brolls) if (b.query) await search(b); // one at a time, to stay inside the anonymous rate limits
+  const found = brolls.filter(b => b.img).length;
+  status(`${lines.length} caption lines and ${found} of ${brolls.length} b-roll photos ready. Play it, then export.`);
+}
+
+const MODE_LABEL = { full: 'Full screen', card: 'Photo card', blur: 'Blurred behind' };
+let brollEls = [];
+function renderBrolls() {
+  brollEls = brolls.map(b => {
+    const thumb = el('img', { className: 'thumb', alt: b.img ? `Photo for ${b.query}` : '' });
+    if (b.img) thumb.src = b.img.src;
+    const mode = el('select', {}, ...Object.entries(MODE_LABEL).map(([v, t]) => el('option', { value: v, textContent: t, selected: v === b.mode })));
+    mode.setAttribute('aria-label', 'How the photo appears');
+    mode.onchange = () => (b.mode = mode.value);
+    const q = el('input', { type: 'text', value: b.query, placeholder: 'What should the photo show?' });
+    q.setAttribute('aria-label', 'Photo search');
+    q.onchange = () => { b.query = q.value.trim(); if (b.query) search(b); };
+    const swap = el('button', { type: 'button', className: 'btn ghost', textContent: 'Swap photo', disabled: b.options.length < 2 });
+    swap.onclick = async () => { b.pick = (b.pick + 1) % b.options.length; await usePick(b); renderBrolls(); };
+    const up = el('input', { type: 'file', accept: 'image/*', hidden: true });
+    up.onchange = async () => {
+      if (!up.files[0]) return;
+      b.img = await loadImg(URL.createObjectURL(up.files[0]));
+      b.credit = '';
+      b.note = 'Using your photo.';
+      renderBrolls();
+    };
+    const upBtn = el('button', { type: 'button', className: 'btn ghost', textContent: 'Upload', onclick: () => up.click() });
+    const del = el('button', { type: 'button', className: 'btn ghost', textContent: 'Remove' });
+    del.onclick = () => { brolls = brolls.filter(x => x !== b); renderBrolls(); renderTimeline(); };
+    const when = el('button', { type: 'button', className: 't', textContent: `${fmt(b.start)} – ${fmt(b.end)}`, onclick: () => seek(b.start) });
+    const body = el('div', { className: 'stack' },
+      el('div', { className: 'meta' }, when, mode),
+      q,
+      ...(b.note ? [el('p', { className: 'hint', textContent: b.note })] : []),
+      el('div', { className: 'actions' }, swap, upBtn, del, up));
+    return el('li', {}, thumb, body);
+  });
+  $('brolls').replaceChildren(...brollEls);
+  if (!brolls.length && lines.length) $('brolls').append(el('li', { className: 'hint', textContent: 'No b-roll yet. Move the playhead and add one.' }));
+  $('credits').value = brolls.map(b => b.credit).filter(Boolean).join('\n');
+}
+
+$('addBroll').onclick = () => {
+  const t = video.currentTime;
+  const line = lines.find(l => t >= l.start && t < l.end) ?? lines.find(l => l.start >= t);
+  const b = { id: nextId++, start: t, end: Math.min(t + 2.5, video.duration), query: line ? pickKeyword(line.words.map(w => w.text).join(' ')) ?? '' : '', mode: 'full', options: [], pick: 0 };
+  brolls = [...brolls, b].sort((x, y) => x.start - y.start);
+  renderBrolls();
+  renderTimeline();
+  if (b.query) search(b);
+};
+
+// --- timeline ---
+function block(start, end, text, onclick, cls = 'block') {
+  const b = el('button', { type: 'button', className: cls, textContent: text, title: text, onclick });
+  b.style.left = `${start * PX}px`;
+  b.style.width = `${Math.max(4, (end - start) * PX - 2)}px`;
+  return b;
+}
+function renderTimeline() {
+  $('tracks').style.width = `${(video.duration || 0) * PX}px`;
+  $('trackCaps').replaceChildren(
+    ...lines.map(l => block(l.start, l.end, l.words.map(w => w.text).join(' '), () => { seek(l.start); showTab('captions'); })),
+    ...cuts.map(([a, b]) => { const z = el('div', { className: 'cutzone' }); z.style.left = `${a * PX}px`; z.style.width = `${(b - a) * PX}px`; return z; }));
+  $('trackBroll').replaceChildren(...brolls.map(b => block(b.start, b.end, b.img ? b.query : `${b.query || 'b-roll'} (no photo)`, () => { seek(b.start); showTab('broll'); })));
+}
+$('tracks').onclick = e => {
+  if (e.target.closest('.block')) return;
+  seek((e.clientX - $('tracks').getBoundingClientRect().left) / PX);
+};
+
+function renderAll() {
+  renderTranscript();
+  renderBrolls();
+  renderTimeline();
 }
 
 // --- smart cuts ---
 function updateCuts() {
   cuts = cutRanges(words(), { fillers: $('fillers').checked, silence: $('silences').checked ? +$('silence').value : 0 });
 }
-$('fillers').onchange = $('silences').onchange = updateCuts;
-$('silence').oninput = () => { $('silOut').textContent = $('silence').value; updateCuts(); };
+$('fillers').onchange = $('silences').onchange = () => { updateCuts(); renderTimeline(); };
+$('silence').oninput = () => { $('silOut').textContent = $('silence').value; updateCuts(); renderTimeline(); };
 
-// --- style ---
-$('presets').append(...Object.entries(PRESETS).map(([key, p]) => {
-  const b = Object.assign(document.createElement('button'), { type: 'button', textContent: p.name });
+// --- style gallery ---
+const SAMPLE = { start: 0, end: 2.4, words: ['This', 'game', 'is', 'insane'].map((text, i) => ({ text, start: i * 0.6, end: i * 0.6 + 0.6, cut: false })) };
+const galleries = Object.entries(PRESETS).map(([key, p]) => {
+  const c = el('canvas', { width: 150, height: 200 });
+  const b = el('button', { type: 'button', className: 'preset' }, c, el('span', { textContent: p.name }));
   b.setAttribute('aria-pressed', key === preset);
+  b.setAttribute('aria-label', `${p.name} caption style`);
   b.onclick = () => {
     preset = key;
-    $('presets').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+    document.querySelectorAll('.preset').forEach(x => x.setAttribute('aria-pressed', x === b));
   };
-  return b;
-}));
-
-function drawCaption(t) {
-  const line = lines.findLast(l => t >= l.start && t < l.end + 0.3);
-  const ws = line?.words.filter(w => !w.cut);
-  if (!ws?.length) return;
-  const p = PRESETS[preset], W = canvas.width, H = canvas.height;
-  const s = (+$('size').value * H) / 100;
-  ctx.save();
-  ctx.font = p.font.replace('{s}', s);
-  ctx.textBaseline = 'middle';
-  const texts = ws.map(w => ($('upper').checked ? w.text.toUpperCase() : w.text));
-  const isActive = w => t >= w.start && t < w.end;
-  const widths = texts.map(x => ctx.measureText(x).width);
-  // A grown word takes its grown width in the layout so it never overlaps its neighbours.
-  const slots = widths.map((w, i) => (isActive(ws[i]) && p.grow ? w * p.grow : w));
-  const gap = ctx.measureText(' ').width;
-  const total = slots.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
-  ctx.translate(W / 2, (H * +$('pos').value) / 100);
-  ctx.scale(Math.min(1, (W * 0.9) / total), Math.min(1, (W * 0.9) / total));
-  if (p.bar) {
-    ctx.fillStyle = p.bar;
-    ctx.beginPath();
-    ctx.roundRect(-total / 2 - s * 0.4, -s * 0.75, total + s * 0.8, s * 1.5, s * 0.25);
-    ctx.fill();
+  $('presets').append(b);
+  return { c, p };
+});
+function drawGallery(now) {
+  const t = reduceMotion ? 1.3 : (now / 1000) % 2.8;
+  for (const { c, p } of galleries) {
+    const g = c.getContext('2d');
+    const bg = g.createLinearGradient(0, 0, 0, 200);
+    bg.addColorStop(0, '#3b3247');
+    bg.addColorStop(1, '#121016');
+    g.fillStyle = bg;
+    g.fillRect(0, 0, 150, 200);
+    drawCaption(g, 150, 200, SAMPLE, t, p, { size: 9, pos: 62, upper: true, index: 0 });
   }
-  let x = -total / 2;
-  ws.forEach((w, i) => {
-    const active = isActive(w), cx = x + slots[i] / 2;
-    x += (slots[i] - widths[i]) / 2;
-    ctx.save();
-    if (active && p.grow) { ctx.translate(cx, 0); ctx.scale(p.grow, p.grow); ctx.translate(-cx, 0); }
-    if (active && p.box) {
-      ctx.fillStyle = p.box;
-      ctx.beginPath();
-      ctx.roundRect(x - s * 0.15, -s * 0.65, widths[i] + s * 0.3, s * 1.3, s * 0.2);
-      ctx.fill();
-    }
-    if (p.glow) { ctx.shadowColor = p.glow; ctx.shadowBlur = s * 0.5; }
-    if (p.stroke) { ctx.lineWidth = s * 0.18; ctx.lineJoin = 'round'; ctx.strokeStyle = p.stroke; ctx.strokeText(texts[i], x, 0); }
-    ctx.fillStyle = active && p.active ? p.active : p.fill;
-    ctx.fillText(texts[i], x, 0);
-    ctx.restore();
-    x += widths[i] + (slots[i] - widths[i]) / 2 + gap;
-  });
-  ctx.restore();
 }
 
 // --- preview loop ---
+let lastLine = -1, lastBroll = -1;
+function drawFrame(t) {
+  const W = canvas.width, H = canvas.height;
+  const li = lines.findLastIndex(l => t >= l.start && t < l.end + 0.3);
+  // Punch-in: every third line jumps 12% closer, the way editors cut talking heads.
+  const z = $('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+  drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, z);
+  for (const b of brolls) drawBroll(ctx, W, H, b, t, video);
+  if (li >= 0) drawCaption(ctx, W, H, lines[li], t, PRESETS[preset], { ...settings(), index: li });
+  return li;
+}
+
 // shortcut: rAF pauses in background tabs, so export needs the tab visible; a WebCodecs + muxer pipeline would lift that.
-function frame() {
+function frame(now) {
   if (video.readyState >= 2) {
     if (!video.paused) {
       const to = skipCut(video.currentTime, cuts);
       if (to !== video.currentTime) video.currentTime = Math.min(to, video.duration);
     }
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    drawCaption(video.currentTime);
-    $('seek').value = video.currentTime;
-    $('time').textContent = `${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+    const t = video.currentTime;
+    const li = drawFrame(t);
+    $('playhead').style.left = `${t * PX}px`;
+    $('time').textContent = `${fmt(t)} / ${fmt(video.duration)}`;
+    if (!video.paused) {
+      const sc = $('scroller');
+      if (t * PX < sc.scrollLeft || t * PX > sc.scrollLeft + sc.clientWidth - 60) sc.scrollLeft = t * PX - 60;
+    }
+    if (li !== lastLine) { lineEls[lastLine]?.classList.remove('now'); lineEls[li]?.classList.add('now'); lastLine = li; }
+    const bi = brolls.findIndex(b => t >= b.start && t < b.end);
+    if (bi !== lastBroll) { brollEls[lastBroll]?.classList.remove('now'); brollEls[bi]?.classList.add('now'); lastBroll = bi; }
   }
+  if (!$('tab-style').hidden) drawGallery(now);
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+fontsReady.then(() => requestAnimationFrame(frame));
 
 $('play').onclick = () => (video.paused ? video.play() : video.pause());
 video.onplay = () => ($('play').textContent = 'Pause');
 video.onpause = () => ($('play').textContent = 'Play');
-$('seek').oninput = () => (video.currentTime = +$('seek').value);
+document.addEventListener('keydown', e => {
+  if (e.code !== 'Space' || e.target.closest('input, textarea, select, button') || $('play').disabled) return;
+  e.preventDefault();
+  $('play').click();
+});
 
 // --- export ---
-$('srt').onclick = () => download(new Blob([toSrt(lines)], { type: 'text/plain' }), file.name.replace(/\.[^.]+$/, '') + '.srt');
+$('srt').onclick = () => download(new Blob([toSrt(lines)], { type: 'text/plain' }), baseName() + '.srt');
 
 $('export').onclick = async () => {
   if (exporting) return;
@@ -208,26 +387,24 @@ $('export').onclick = async () => {
     src.connect(audioDest);
     src.connect(ac.destination);
   }
-  const type = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
-  if (!type) return status("This browser can't record video. Try Chrome or Edge.");
+  const type = ['video/mp4;codecs=avc3,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
+  if (!type) return status("This browser can't record video. Use Chrome or Edge.");
   const stream = new MediaStream([...canvas.captureStream(30).getVideoTracks(), ...audioDest.stream.getAudioTracks()]);
   const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8e6 });
   const chunks = [];
+  const lock = on => { exporting = on; for (const id of ['export', 'play', 'transcribe', 'srt']) $(id).disabled = on; };
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
   rec.onstop = () => {
-    exporting = false;
-    $('export').disabled = $('play').disabled = $('seek').disabled = false;
-    download(new Blob(chunks, { type }), file.name.replace(/\.[^.]+$/, '') + '-murmurcut.' + (type.includes('mp4') ? 'mp4' : 'webm'));
-    status('Export finished.');
+    lock(false);
+    download(new Blob(chunks, { type }), `${baseName()}-murmurcut.${type.includes('mp4') ? 'mp4' : 'webm'}`);
+    status('Export finished. Check your downloads.');
   };
-
-  exporting = true;
-  $('export').disabled = $('play').disabled = $('seek').disabled = true;
+  lock(true);
   video.pause();
-  video.currentTime = skipCut(0, cuts);
+  seek(skipCut(0, cuts));
   await new Promise(r => video.addEventListener('seeked', r, { once: true }));
   video.addEventListener('ended', () => rec.stop(), { once: true });
   rec.start(1000);
-  status('Exporting in real time. Keep this tab open and visible…');
+  status('Exporting in real time. Keep this tab open and visible.');
   await video.play();
 };

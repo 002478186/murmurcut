@@ -60,6 +60,76 @@ export function skipCut(t, cuts) {
   return c ? c[1] : t;
 }
 
+const STOP = new Set(('a an the and or but so if then than that this these those there here it its it\'s is are was were be been being am ' +
+  'i me my we our you your he she him her they them their what which who whom when where why how all any both each few more most ' +
+  'other some such no not only own same too very can will just should now also really actually like thing things stuff get got ' +
+  'do does did done doing have has had having to of in on at by for with about from up down out over into after before again ' +
+  'one two lot lots way much many even still well yeah okay ok guys hey welcome back today let let\'s going gonna want know think ' +
+  'say said see look make made come came give take good great new old because while during per mean means kind sort around ' +
+  'after somewhere tell thank thanks comment man little').split(' '));
+
+// Scores words by how picturable they are: names, acronyms (PS5, DMZ) and long nouns beat filler.
+// Returns { word, score, idx } for the best one in the whitespace-split text, or null.
+function scoreKeyword(text) {
+  const toks = text.split(/\s+/).map(t => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''));
+  const ok = t => t && !STOP.has(t.toLowerCase());
+  const isProper = t => ok(t) && /^\p{Lu}/u.test(t);
+  let best = null;
+  toks.forEach((t, i) => {
+    if (!ok(t) || (t.length < 3 && !/\d/.test(t)) || /^\d+$/.test(t)) return;
+    let word = t, score = Math.min(t.length, 10);
+    if (/^\p{Lu}[\p{Lu}\d]+$/u.test(t)) score += 8;
+    else if (isProper(t)) score += 6;
+    if (/\d/.test(t) && /\p{L}/u.test(t)) score += 6;
+    if (isProper(t) && isProper(toks[i + 1] ?? '')) [word, score] = [`${t} ${toks[i + 1]}`, score + 3];
+    if (!best || score > best.score) best = { word, score, idx: i };
+  });
+  return best;
+}
+
+// The word or proper-noun phrase most worth illustrating; null if nothing is.
+export const pickKeyword = text => scoreKeyword(text)?.word ?? null;
+
+// What the whole video is about, judged from its opening: creators name the topic up front.
+export const topicOf = words => pickKeyword(words.slice(0, 30).map(w => w.text).join(' '));
+
+export const BROLL_MODES = ['full', 'card', 'blur'];
+
+// One visual per sentence that has something to show. The strongest keywords win when two would sit too close,
+// so the speaker stays on screen between them. A segment with `words` places the visual on the keyword itself;
+// otherwise its time is estimated from where the keyword sits in the sentence.
+export function planBroll(segments, { minGap = 2.5, dur = 2.5, start = 1.5 } = {}) {
+  const cands = [];
+  for (const s of segments) {
+    const k = scoreKeyword(s.text);
+    if (!k) continue;
+    const n = s.text.split(/\s+/).length;
+    const at = s.words?.[k.idx]?.start ?? s.start + ((s.end - s.start) * k.idx) / n;
+    const from = Math.max(s.start, Math.min(at - 0.3, s.end - 0.8));
+    const end = Math.min(s.end, from + dur);
+    if (from >= start && end - from >= 0.75) cands.push({ start: from, end, query: k.word, score: k.score });
+  }
+  const picked = [];
+  for (const c of cands.sort((a, b) => b.score - a.score))
+    if (picked.every(p => c.start >= p.end + minGap || c.end + minGap <= p.start)) picked.push(c);
+  return picked
+    .sort((a, b) => a.start - b.start)
+    .map(({ score, ...c }, i) => ({ ...c, mode: BROLL_MODES[i % BROLL_MODES.length] }));
+}
+
+// Sentence-sized segments from word timings.
+export const toSegments = words =>
+  groupWords(words, { maxWords: 14, maxGap: 1 }).map(l => ({ start: l.start, end: l.end, words: l.words, text: l.words.map(w => w.text).join(' ') }));
+
+// Index of the word to emphasise in a line: the keyword if present, else the longest word.
+export function emphasisIndex(words) {
+  const k = pickKeyword(words.map(w => w.text).join(' '))?.split(' ')[0];
+  const clean = t => t.replace(/[^\p{L}\p{N}]/gu, '');
+  const i = k ? words.findIndex(w => clean(w.text) === k) : -1;
+  if (i >= 0) return i;
+  return words.reduce((b, w, j) => (clean(w.text).length > clean(words[b].text).length ? j : b), 0);
+}
+
 const ts = s => {
   const ms = Math.round(s * 1000);
   const p = (n, l = 2) => String(n).padStart(l, '0');
