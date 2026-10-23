@@ -11,7 +11,8 @@ main { display: grid; grid-template-columns: 1fr 320px; gap: 16px; padding: 16px
 .drop { display: grid; place-items: center; min-height: 320px; border: 2px dashed var(--line); border-radius: 12px; color: var(--muted); cursor: pointer; text-align: center; padding: 16px; }
 .drop.over { border-color: var(--accent); color: var(--text); }
 canvas { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; border-radius: 12px; background: #000; }
-canvas[hidden], .controls[hidden], progress[hidden] { display: none; }
+[hidden] { display: none !important; }
+.controls label { flex-direction: row; color: var(--text); background: var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
 .controls { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
 .controls input { flex: 1; }
 aside { display: flex; flex-direction: column; gap: 12px; }

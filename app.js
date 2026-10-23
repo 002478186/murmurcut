@@ -30,7 +30,9 @@ function load(f) {
   if (!f?.type.startsWith('video/')) return status('Please choose a video file.');
   file = f;
   lines = [];
+  cuts = [];
   renderTranscript();
+  $('export').disabled = $('srt').disabled = true;
   video.src = URL.createObjectURL(f);
 }
 $('file').onchange = e => load(e.target.files[0]);
@@ -135,9 +137,12 @@ function drawCaption(t) {
   ctx.font = p.font.replace('{s}', s);
   ctx.textBaseline = 'middle';
   const texts = ws.map(w => ($('upper').checked ? w.text.toUpperCase() : w.text));
+  const isActive = w => t >= w.start && t < w.end;
   const widths = texts.map(x => ctx.measureText(x).width);
+  // A grown word takes its grown width in the layout so it never overlaps its neighbours.
+  const slots = widths.map((w, i) => (isActive(ws[i]) && p.grow ? w * p.grow : w));
   const gap = ctx.measureText(' ').width;
-  const total = widths.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
+  const total = slots.reduce((a, b) => a + b, 0) + gap * (ws.length - 1);
   ctx.translate(W / 2, (H * +$('pos').value) / 100);
   ctx.scale(Math.min(1, (W * 0.9) / total), Math.min(1, (W * 0.9) / total));
   if (p.bar) {
@@ -148,7 +153,8 @@ function drawCaption(t) {
   }
   let x = -total / 2;
   ws.forEach((w, i) => {
-    const active = t >= w.start && t < w.end, cx = x + widths[i] / 2;
+    const active = isActive(w), cx = x + slots[i] / 2;
+    x += (slots[i] - widths[i]) / 2;
     ctx.save();
     if (active && p.grow) { ctx.translate(cx, 0); ctx.scale(p.grow, p.grow); ctx.translate(-cx, 0); }
     if (active && p.box) {
@@ -162,7 +168,7 @@ function drawCaption(t) {
     ctx.fillStyle = active && p.active ? p.active : p.fill;
     ctx.fillText(texts[i], x, 0);
     ctx.restore();
-    x += widths[i] + gap;
+    x += widths[i] + (slots[i] - widths[i]) / 2 + gap;
   });
   ctx.restore();
 }
