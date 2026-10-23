@@ -1,0 +1,12 @@
+{
+  "name": "murmurcut",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Free, private, in-browser AI captions and jump cuts for talking-head videos.",
+  "scripts": {
+    "start": "npx --yes serve@14.2.4 .",
+    "test": "node test.mjs"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>murmurcut</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><h1>murmurcut</h1><p>Free AI captions and jump cuts. Runs in your browser, so your video never leaves your machine.</p></header>
+  <main>
+    <section class="stage">
+      <label id="drop" class="drop">
+        <input id="file" type="file" accept="video/*" hidden>
+        <span>Drop a video here or click to choose one</span>
+      </label>
+      <canvas id="canvas" hidden aria-label="Video preview with captions"></canvas>
+      <video id="video" playsinline hidden></video>
+      <div id="controls" class="controls" hidden>
+        <button id="play" type="button">Play</button>
+        <input id="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Seek">
+        <span id="time">0:00</span>
+      </div>
+    </section>
+
+    <aside>
+      <fieldset>
+        <legend>1. Transcribe</legend>
+        <label>Language
+          <select id="lang">
+            <option value="english">English</option><option value="hindi">Hindi</option>
+            <option value="spanish">Spanish</option><option value="french">French</option>
+            <option value="german">German</option><option value="portuguese">Portuguese</option>
+            <option value="italian">Italian</option><option value="japanese">Japanese</option>
+            <option value="korean">Korean</option><option value="chinese">Chinese</option>
+            <option value="arabic">Arabic</option><option value="russian">Russian</option>
+          </select>
+        </label>
+        <button id="transcribe" class="primary" type="button" disabled>Generate captions</button>
+        <progress id="progress" hidden></progress>
+        <p id="status" role="status"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>2. Style</legend>
+        <div id="presets" class="presets"></div>
+        <label>Size <input id="size" type="range" min="3" max="12" step="0.5" value="6"></label>
+        <label>Position <input id="pos" type="range" min="10" max="92" value="75"></label>
+        <label class="row"><input id="upper" type="checkbox" checked> UPPERCASE</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>3. Smart cuts</legend>
+        <label class="row"><input id="fillers" type="checkbox"> Remove filler words (um, uh)</label>
+        <label class="row"><input id="silences" type="checkbox"> Remove silences longer than <output id="silOut">0.8</output>s</label>
+        <input id="silence" type="range" min="0.3" max="3" step="0.1" value="0.8" aria-label="Silence threshold">
+        <p class="hint">Click a word in the transcript to cut it.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>4. Export</legend>
+        <button id="export" class="primary" type="button" disabled>Export video</button>
+        <button id="srt" type="button" disabled>Download .srt</button>
+      </fieldset>
+    </aside>
+
+    <section class="transcript">
+      <h2>Transcript</h2>
+      <ol id="lines"><li class="hint">Captions will appear here.</li></ol>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
