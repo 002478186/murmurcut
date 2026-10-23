@@ -95,12 +95,34 @@ function scoreKeyword(text) {
 // The word or proper-noun phrase most worth illustrating; null if nothing is.
 export const pickKeyword = text => scoreKeyword(text)?.word ?? null;
 
-// What the whole video is about, judged from its opening: creators name the topic up front.
-export const topicOf = words => pickKeyword(words.slice(0, 30).map(w => w.text).join(' '));
+// What the whole video is about, judged from its first sentence or so: creators name the topic up front,
+// and a wider window lets a later word ("Professional") outscore the real topic.
+export const topicOf = words => pickKeyword(words.slice(0, 15).map(w => w.text).join(' '));
+
+// The kind of thing a Wikipedia short description names: "2026 video game" -> "video game",
+// "American review aggregation website" -> "aggregation website", "Capital of Maharashtra, India" -> "Capital".
+export const domainOf = description =>
+  (description ?? '').split(/,| of | by | in | who | that /)[0].replace(/\b\d{4}s?\b/g, '').trim().split(/\s+/).slice(-2).join(' ');
 
 // Websites, companies, scores: things a photo can't honestly show, so their name (and number) works better as text.
 const ABSTRACT = /\b(website|web site|company|corporation|organi[sz]ation|aggregator|platform|service|software|app|application|brand|magazine|publisher|award|index|rating|search engine|social network)\b/i;
 export const isAbstract = description => ABSTRACT.test(description ?? '');
+
+// Tidies a language model's search: first line, no punctuation or repeats, no topic words (they drown out the scene), 4 words max.
+export function cleanQuery(text, topic = '') {
+  const skip = new Set(topic.toLowerCase().split(/\s+/));
+  const seen = new Set();
+  return (text ?? '').split('\n')[0].toLowerCase().replace(/[^\p{L}\p{N}$\s-]/gu, ' ').split(/\s+/)
+    .filter(w => w && !skip.has(w) && !seen.has(w) && seen.add(w)).slice(0, 4).join(' ');
+}
+
+// A word a small model repeats in most of a video's searches is a tic, not content ("skyline task", "cost task").
+export function dropCommon(queries) {
+  const count = new Map();
+  for (const q of queries) for (const w of new Set(q.split(' ').filter(Boolean))) count.set(w, (count.get(w) ?? 0) + 1);
+  const limit = Math.max(2, queries.length / 2);
+  return queries.map(q => q.split(' ').filter(w => (count.get(w) ?? 0) <= limit).join(' '));
+}
 
 export const BROLL_MODES = ['full', 'card', 'blur'];
 

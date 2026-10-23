@@ -83,7 +83,20 @@
 
       <div role="tabpanel" id="tab-broll" aria-labelledby="t-broll" class="pane" hidden>
         <p class="hint">murmurcut finds free photos for the main things you talk about, and picks the one that best fits what you said. When nothing fits, it shows the words as a text card instead. Change any search, swap the photo or upload your own.</p>
-        <button id="addBroll" class="btn ghost wide" type="button" disabled>Add b-roll at the playhead</button>
+        <label class="check"><input id="aiSearch" type="checkbox"> Let AI write the photo searches</label>
+        <p class="hint">An AI reads each sentence and searches for what it shows, for example "skyline mumbai" instead of just "Mumbai". It runs in this tab and downloads a language model of about 500–800 MB the first time.</p>
+        <details class="sources">
+          <summary>More photo sources</summary>
+          <p class="hint">Free keys unlock the much bigger Pexels and Unsplash libraries. Your keys stay in this browser and are only sent to that service.</p>
+          <label>Pexels API key <input id="pexelsKey" type="password" autocomplete="off" spellcheck="false"></label>
+          <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">Get a free Pexels key</a>
+          <label>Unsplash access key <input id="unsplashKey" type="password" autocomplete="off" spellcheck="false"></label>
+          <a href="https://unsplash.com/oauth/applications" target="_blank" rel="noopener">Get a free Unsplash key</a>
+        </details>
+        <div class="field-row">
+          <button id="addBroll" class="btn ghost" type="button" disabled>Add at playhead</button>
+          <button id="researchAll" class="btn ghost" type="button" disabled>Search all again</button>
+        </div>
         <ol id="brolls" class="brolls"></ol>
         <details class="credits">
           <summary>Photo credits</summary>

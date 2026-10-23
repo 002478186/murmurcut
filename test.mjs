@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, pickKeyword, planBroll, toSegments, emphasisIndex, topicOf, isAbstract } from './captions.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, pickKeyword, planBroll, toSegments, emphasisIndex, topicOf, isAbstract, cleanQuery, dropCommon, domainOf } from './captions.js';
 
 const words = toWords([
   { text: ' Hello', timestamp: [0, 0.4] },
@@ -64,5 +64,18 @@ assert.deepEqual([meta.query, meta.label, meta.context], ['Metacritic', 'Metacri
 assert.ok(isAbstract('American review aggregator website'));
 assert.ok(!isAbstract('Home video game console by Sony'));
 assert.ok(!isAbstract('Capital of Maharashtra, India'));
+
+assert.equal(cleanQuery('"DMZ mode multiplayer speed games weekend-game DMZ"'), 'dmz mode multiplayer speed');
+assert.equal(cleanQuery('modern warfare skyline mumbai\n\nNote: -', 'Modern Warfare 4'), 'skyline mumbai');
+assert.equal(cleanQuery(undefined), '');
+assert.deepEqual(dropCommon(['skyline task skyland', 'currency task cost', 'task cost india canada', 'game mode']), ['skyline skyland', 'currency cost', 'cost india canada', 'game mode']);
+
+// The real opening of the test clip: the topic is the game, not the later translation slip.
+const opening = 'Modern Warfare 4 Man, look at this, Mumbai Mission, gone dark, fans have done this building spot. Professional confirm is not there, but Skyline is for sure Mumbai.';
+assert.equal(topicOf(toWords(opening.split(' ').map((text, i) => ({ text, timestamp: [i, i + 1] })))), 'Modern Warfare 4');
+assert.equal(domainOf('2026 video game'), 'video game');
+assert.equal(domainOf('Capital of Maharashtra, India'), 'Capital');
+assert.equal(domainOf('Person who is paid to undertake a specialized set of tasks'), 'Person');
+assert.equal(domainOf(undefined), '');
 
 console.log('ok');

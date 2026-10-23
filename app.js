@@ -1,4 +1,4 @@
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract } from './captions.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf } from './captions.js';
 import { PRESETS, drawCaption, drawBroll, drawCover } from './render.js';
 
 const $ = id => document.getElementById(id);
@@ -46,7 +46,7 @@ function load(f) {
   brolls = [];
   cuts = [];
   renderAll();
-  $('export').disabled = $('srt').disabled = $('addBroll').disabled = true;
+  $('export').disabled = $('srt').disabled = $('addBroll').disabled = $('researchAll').disabled = true;
   $('fileName').textContent = f.name;
   video.src = URL.createObjectURL(f);
 }
@@ -105,17 +105,18 @@ $('transcribe').onclick = async () => {
   worker.postMessage({ audio, language, model: $('model').value, translate: language !== 'english' && $('capLang').value === 'english' }, [audio.buffer]);
 };
 
-// Photo ranking requests share the worker with transcription; replies are matched by id.
+// Ranking and search-writing requests share the worker with transcription; replies are matched by id.
 const pending = new Map();
-let rankId = 0;
-const rankTexts = (queries, texts) => new Promise((resolve, reject) => {
-  const id = ++rankId;
-  pending.set(id, d => (d.error ? reject(new Error(d.error)) : resolve(d.scores)));
-  worker.postMessage({ type: 'rank', id, queries, texts });
+let askId = 0;
+const askWorker = msg => new Promise((resolve, reject) => {
+  const id = ++askId;
+  pending.set(id, d => (d.error ? reject(new Error(d.error)) : resolve(d)));
+  worker.postMessage({ ...msg, id });
 });
+const rankTexts = (queries, texts) => askWorker({ type: 'rank', queries, texts }).then(d => d.scores);
 
 worker.onmessage = ({ data }) => {
-  if (data.type === 'ranked') { pending.get(data.id)?.(data); pending.delete(data.id); return; }
+  if (data.type === 'ranked' || data.type === 'suggested') { pending.get(data.id)?.(data); pending.delete(data.id); return; }
   if (data.type === 'progress') { $('progress').value = data.progress / 100; return; }
   if (data.type === 'status') { $('progress').removeAttribute('value'); return status(data.text); }
   $('progress').hidden = true;
@@ -128,7 +129,7 @@ worker.onmessage = ({ data }) => {
   topicInfo = genericPool = null;
   updateCuts();
   renderAll();
-  $('export').disabled = $('srt').disabled = $('addBroll').disabled = !lines.length;
+  $('export').disabled = $('srt').disabled = $('addBroll').disabled = $('researchAll').disabled = !lines.length;
   if (!lines.length) return status('No speech found in this video.');
   status(`${lines.length} caption lines and ${brolls.length} b-roll moments. Finding photos…`);
   searchAll();
@@ -173,6 +174,7 @@ async function usePick(b) {
       b.img = await loadImg(o.src);
       b.credit = o.credit;
       b.note = '';
+      if (o.track) fetch(o.track).catch(() => {}); // Unsplash's API terms ask apps to report each photo they use
       return;
     } catch {
       b.pick = (b.pick + 1) % b.options.length;
@@ -220,20 +222,50 @@ async function loadTopic() {
   if (topicInfo || !topic) return;
   const p = (await wikiPages(topic, 1).catch(() => []))[0];
   const desc = p?.description ?? '';
-  topicInfo = { about: p ? `${p.title}: ${desc}` : topic, domain: desc.replace(/\b\d{4}s?\b/g, '').trim().split(/\s+/).slice(-2).join(' ') };
+  topicInfo = { about: p ? `${p.title}: ${desc}` : topic, domain: domainOf(desc) };
   if (topicInfo.domain) genericPool = openversePhotos(topicInfo.domain).then(r => r.map(o => ({ ...o, generic: true })), () => []);
 }
 
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const MIN_FIT = 0.3; // below this nothing found fits what was said, so a text card beats a wrong photo
 
+// Optional libraries, unlocked by the user's own free keys.
+const keys = () => ({ pexels: $('pexelsKey').value.trim(), unsplash: $('unsplashKey').value.trim() });
+async function pexelsPhotos(q, key) {
+  const r = await fetch(`https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=10`, { headers: { Authorization: key } });
+  if (!r.ok) throw new Error(r.status === 401 ? 'The Pexels key was not accepted. Check it in More photo sources.' : `Pexels search failed (${r.status}).`);
+  return (await r.json()).photos.map(p => ({ src: p.src.large, about: p.alt || q, credit: `Photo by ${p.photographer} on Pexels: ${p.url}` }));
+}
+async function unsplashPhotos(q, key) {
+  const auth = `client_id=${encodeURIComponent(key)}`;
+  const r = await fetch(`https://api.unsplash.com/search/photos?query=${encodeURIComponent(q)}&per_page=10&${auth}`);
+  if (!r.ok) throw new Error(r.status === 401 ? 'The Unsplash key was not accepted. Check it in More photo sources.' : `Unsplash search failed (${r.status}).`);
+  return (await r.json()).results.map(p => ({
+    src: p.urls.regular,
+    about: p.alt_description || p.description || q,
+    credit: `Photo by ${p.user.name} on Unsplash: ${p.links.html}?utm_source=murmurcut&utm_medium=referral`,
+    track: `${p.links.download_location}&${auth}`,
+  }));
+}
+
 async function search(b) {
   b.note = 'Searching…';
   renderBrolls();
   await loadTopic();
   const q = b.query;
+  // The AI search describes the scene ("skyline mumbai"); the keyword names the thing ("Mumbai"). Both feed the same ranking.
+  const ai = b.ai && b.ai !== q.toLowerCase() ? b.ai : null;
+  const k = keys();
   const exact = wikiPages(q);
-  const results = await Promise.allSettled([exact.then(toPhotos), topic && !q.includes(topic) && wikiPhotos(`${q} ${topic}`), openversePhotos(q), genericPool].filter(Boolean));
+  const results = await Promise.allSettled([
+    exact.then(toPhotos),
+    topic && !q.includes(topic) && wikiPhotos(`${q} ${topic}`),
+    openversePhotos(q),
+    ai && openversePhotos(ai),
+    k.pexels && pexelsPhotos(ai || q, k.pexels),
+    k.unsplash && unsplashPhotos(ai || q, k.unsplash),
+    genericPool,
+  ].filter(Boolean));
   const seen = new Set();
   let pool = results.flatMap(r => (r.status === 'fulfilled' ? r.value : [])).filter(o => o.src && !seen.has(o.src) && seen.add(o.src));
   const context = b.context || q;
@@ -269,7 +301,24 @@ async function search(b) {
   renderTimeline();
 }
 
+// The language model reads each b-roll sentence and writes a search for what it shows.
+async function writeSearches() {
+  status('AI is reading what you said to write photo searches. The first time downloads its model, so this takes a while…');
+  $('progress').hidden = false;
+  $('progress').removeAttribute('value');
+  try {
+    await loadTopic();
+    const { queries } = await askWorker({ type: 'suggest', domain: topicInfo?.domain || 'general', sentences: brolls.map(b => b.context || b.query) });
+    const clean = dropCommon(queries.map(q => cleanQuery(q, topic ?? '')));
+    brolls.forEach((b, i) => (b.ai = clean[i] || null));
+  } catch (e) {
+    status(`AI search is unavailable (${e.message}), so keywords are used instead.`);
+  }
+  $('progress').hidden = true;
+}
+
 async function searchAll() {
+  if ($('aiSearch').checked && brolls.some(b => !b.ai && b.context)) await writeSearches();
   for (const b of brolls) if (b.query) await search(b); // one at a time, to stay inside the anonymous rate limits
   const found = brolls.filter(b => b.img && b.mode !== 'text').length;
   status(`${lines.length} caption lines, ${found} b-roll photos and ${brolls.length - found} text cards ready. Play it, then export.`);
@@ -286,7 +335,7 @@ function renderBrolls() {
     mode.onchange = () => { b.mode = mode.value; renderBrolls(); renderTimeline(); };
     const q = el('input', { type: 'text', value: b.query, placeholder: 'What should the photo show?' });
     q.setAttribute('aria-label', 'Photo search');
-    q.onchange = () => { b.query = b.label = q.value.trim(); if (b.query) search(b); };
+    q.onchange = () => { b.query = b.label = q.value.trim(); b.ai = null; if (b.query) search(b); }; // a typed search is the user's intent
     const swap = el('button', { type: 'button', className: 'btn ghost', textContent: 'Swap photo', disabled: b.options.length < 2 });
     swap.onclick = async () => { b.pick = (b.pick + 1) % b.options.length; await usePick(b); renderBrolls(); };
     const up = el('input', { type: 'file', accept: 'image/*', hidden: true });
@@ -304,6 +353,7 @@ function renderBrolls() {
     const body = el('div', { className: 'stack' },
       el('div', { className: 'meta' }, when, mode),
       q,
+      ...(b.ai ? [el('p', { className: 'hint ai', textContent: `AI also searched for "${b.ai}"` })] : []),
       ...(b.note ? [el('p', { className: 'hint', textContent: b.note })] : []),
       el('div', { className: 'actions' }, swap, upBtn, del, up));
     return el('li', {}, thumb, body);
@@ -323,6 +373,20 @@ $('addBroll').onclick = () => {
   renderTimeline();
   if (b.query) search(b);
 };
+
+$('researchAll').onclick = () => searchAll();
+
+// Per-browser preferences. Storage can be blocked (private windows), which just means nothing is remembered.
+for (const id of ['aiSearch', 'pexelsKey', 'unsplashKey']) {
+  const e = $(id);
+  try {
+    const v = localStorage.getItem(`murmurcut.${id}`);
+    if (v !== null) e.type === 'checkbox' ? (e.checked = v === '1') : (e.value = v);
+  } catch {}
+  e.addEventListener('change', () => {
+    try { localStorage.setItem(`murmurcut.${id}`, e.type === 'checkbox' ? (e.checked ? '1' : '0') : e.value.trim()); } catch {}
+  });
+}
 
 // --- timeline ---
 function block(start, end, text, onclick, cls = 'block') {
