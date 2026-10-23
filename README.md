@@ -2,6 +2,8 @@
 
 **Free, private AI captions and jump cuts for talking-head videos. Everything runs in your browser.**
 
+**▶ Try it: https://002478186.github.io/murmurcut/**
+
 Drop in a video and murmurcut does four things:
 
 1. Transcribes it with word-level timestamps, using OpenAI's Whisper running locally through [transformers.js](https://github.com/huggingface/transformers.js).
