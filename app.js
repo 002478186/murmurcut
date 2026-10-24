@@ -2,6 +2,7 @@ import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, to
 import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker, drawAvatar } from './render.js';
 import { cutAudio, levelAudio, resample, envelope, placeDub, bedMusic, toWav } from './audio.js';
 import { sniffKind, groupAvatars } from './avatars.js';
+import { TOONS, drawToon } from './toons.js';
 import { parseCommand, CHAT_EXAMPLES } from './chat.js';
 
 const $ = id => document.getElementById(id);
@@ -878,7 +879,13 @@ $('avatarDir').onchange = async e => {
   renderAvatars();
   status(avatars.length ? `Found ${avatars.length} avatars. Pick one.` : 'No pictures or videos in that folder.');
 };
+const TOON_W = 720, TOON_H = 1280;
 async function pickAvatar(a) {
+  if (a.toon) {
+    avatar = { name: a.name, toon: a.toon, el: el('canvas', { width: TOON_W, height: TOON_H }), w: TOON_W, h: TOON_H };
+    if ($('avatarMode').value === 'off') $('avatarMode').value = 'corner';
+    return renderAvatars();
+  }
   const src = urlOf((a.image ?? a.video).file);
   const m = a.image ? Object.assign(new Image(), { src }) : Object.assign(document.createElement('video'), { src, muted: true, loop: true, playsInline: true });
   await (a.image ? m.decode() : new Promise((res, rej) => { m.onloadeddata = res; m.onerror = rej; })).catch(() => {});
@@ -889,20 +896,26 @@ async function pickAvatar(a) {
   if (a.voice) new Audio(urlOf(a.voice.file)).play().catch(() => {}); // a taste of their voice
   renderAvatars();
 }
+// The built-in characters come first; avatars from an opened folder follow.
 function renderAvatars() {
-  $('avatars').replaceChildren(...avatars.map(a => {
-    const media = a.image ? el('img', { src: urlOf(a.image.file), alt: '' }) : el('video', { src: urlOf(a.video.file), muted: true, loop: true, autoplay: true, playsInline: true });
+  $('avatars').replaceChildren(...[...TOONS.map(toon => ({ name: toon.name, toon })), ...avatars].map(a => {
+    let media;
+    if (a.toon) { media = el('canvas', { width: 180, height: 320 }); drawToon(media.getContext('2d'), a.toon, 180, 320, 0.5, 1); }
+    else media = a.image ? el('img', { src: urlOf(a.image.file), alt: '' }) : el('video', { src: urlOf(a.video.file), muted: true, loop: true, autoplay: true, playsInline: true });
     const b = el('button', { type: 'button', className: 'preset', onclick: () => pickAvatar(a) }, media, el('span', { textContent: a.name }));
     b.setAttribute('aria-pressed', avatar?.name === a.name);
     return b;
   }));
 }
+renderAvatars();
 
 // --- preview loop ---
 let lastLine = -1, lastBroll = -1;
 function drawFrame(t) {
   const W = canvas.width, H = canvas.height;
   const li = lines.findLastIndex(l => t >= l.start && t < l.end + 0.3);
+  // A built-in character is redrawn every frame so its mouth follows the voice.
+  if (avatar?.toon && avatarOn() && !green) drawToon(avatar.el.getContext('2d'), avatar.toon, TOON_W, TOON_H, avatarAmp(t), t);
   // Punch-in: every third line jumps 12% closer, the way editors cut talking heads. Manual zooms ease in and out.
   const z = Math.max($('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1, zoomAt(t));
   // Captions-on-green export: a flat key colour that any editor can remove to layer the captions over another edit.
