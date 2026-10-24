@@ -35,12 +35,19 @@ The first transcription downloads the Whisper model; Accurate is the bigger down
 | **Import** | Drop in a video or click to choose one. MP4 (H.264) or WebM work best. |
 | **Captions** | Pick the spoken language, and whether the captions should stay in it or be translated to English. Hindi gives the best results with English captions, because Whisper's Hindi transcription is unreliable. |
 | **Fix the words** | Under Captions, replace a misheard word everywhere ("Capsule" with "Kapso"). Or paste the script you read and press *Use my script*: each script line becomes a caption line, timed to your voice, with pauses kept so they can still be cut. This is the way to get Hinglish captions in your own spelling. |
-| **Style** | Choose the layout: full screen, or split screen with the b-roll on top and you below. Every caption preset previews itself live. Then set the size, the position, the capitalisation and the punch-in zoom. |
+| **Chat to edit** | Type what you want under the preview, for example "remove the ums, zoom in at 0:12 and make it square", "style beast", "add a photo of mumbai here" or "replace capsule with Kapso". Several instructions can go in one line. It runs instantly and offline. If it doesn't understand something, it says so and suggests what to try. |
+| **Style** | Every caption preset previews itself live. Then set the size, the position and the capitalisation. |
+| **Scale** | Export as 9:16 (Reels, Shorts), 4:5, 1:1, 16:9 (YouTube) or the original shape. Either fill and crop (and choose which part of the frame to keep), or fit the whole frame over blurred edges. Choose the layout too: full screen, or split screen with the b-roll on top and you below. |
+| **Zoom** | Automatic punch-ins on every third line, plus smooth zooms you add at the playhead, each with its own strength and length. |
 | **B-roll** | Turn on *Let AI write the photo searches* for searches that understand each sentence (a one-time model download of about 500–800 MB). Under *More photo sources*, paste free [Pexels](https://www.pexels.com/api/) and [Unsplash](https://unsplash.com/oauth/applications) keys. They are stored only in your browser. Each moment shows its photo, time and search word. Change the search, swap to the next photo, upload your own, choose how it appears, or add a new moment at the playhead. Copy the photo credits into your video description. *Add a video clip* lays a screen recording or any other video over the timeline from the playhead, on a split screen. Move the playhead and press *Split at playhead*, then set which part of the clip each piece plays (*Clip from* and *to*); a piece stretches or squeezes its part to fit. |
 | **Cuts & sound** | Remove `um`/`uh` fillers and pauses longer than a length you choose. Click any word in Captions to cut it. Cut parts show in red on the timeline. *Reduce background noise* and *Even out the loudness* are on by default and apply when you export. |
-| **Timeline** | The b-roll and caption tracks sit under the preview. Click anywhere to jump there, and press Space to play or pause. |
+| **Timeline** | The b-roll, zoom and caption tracks sit under the preview. Click anywhere to jump there, press Space to play or pause, and press Ctrl+Z (or *Undo*) to step back through any edit. |
 | **Export** | Renders every frame after the video (and any clip) has reached it, encodes with WebCodecs and saves an MP4 with AAC sound. Nothing drops on a slow machine, and the tab can be in the background. |
 | **Captions on green** | Exports only the animated captions on a flat green screen, at the clip's length and 30 fps, with no audio. It renders frame by frame with WebCodecs rather than in real time, so it is frame-accurate even on a slow machine and the tab does not need to stay visible. Key out the green in any editor (CapCut, Premiere, ffmpeg `colorkey`) to lay the captions over a different edit, such as a split screen. |
+
+## Design
+
+The interface follows [`DESIGN.md`](DESIGN.md), a Linear-inspired design system from [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md) (MIT), adapted for an editor. It uses a near-black canvas, graphite surfaces and hairline borders, with lavender reserved for Export, focus and the selected tool. Inter is the interface font and JetBrains Mono shows timecodes. Each timeline track has one tag colour. On a phone, the tool rail becomes a bottom tab bar. The last section of `DESIGN.md` explains how each rule maps onto the editor.
 
 ## How it works
 
@@ -70,7 +77,7 @@ video ──decodeAudioData(16 kHz)──▶ worker.js  Whisper (WebGPU or CPU):
 ## Tests
 
 ```bash
-npm test
+npm test        # caption logic and the chat-to-edit parser
 ```
 
 ## Limits

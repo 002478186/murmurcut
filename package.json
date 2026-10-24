@@ -6,7 +6,7 @@
   "description": "Free, private, in-browser AI captions and jump cuts for talking-head videos.",
   "scripts": {
     "start": "npx --yes serve@14.2.4 .",
-    "test": "node test.mjs"
+    "test": "node test.mjs && node chat.test.mjs"
   },
   "license": "MIT"
 }

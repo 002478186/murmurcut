@@ -1,6 +1,7 @@
 import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, toOutput, toSource, splitClip, clipTime } from './captions.js';
 import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker } from './render.js';
 import { cutAudio, levelAudio } from './audio.js';
+import { parseCommand, CHAT_EXAMPLES } from './chat.js';
 
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d');
@@ -13,6 +14,7 @@ const MUXER = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm';
 const RNNOISE = 'https://cdn.jsdelivr.net/npm/@shiguredo/rnnoise-wasm@2025.1.5/dist/rnnoise.js';
 const FPS = 30, RATE = 48000;
 
+let zooms = []; // manual zooms: { start, end, amount }
 let heard = []; // Whisper's words as heard, kept so "Use my script" can be re-applied after edits
 let green = false, file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
 
@@ -42,10 +44,20 @@ function showTab(name) {
   tabs.forEach(t => {
     const on = t.id === `t-${name}`;
     t.setAttribute('aria-selected', on);
+    t.tabIndex = on ? 0 : -1;
     $(t.getAttribute('aria-controls')).hidden = !on;
   });
 }
 tabs.forEach(t => (t.onclick = () => showTab(t.id.slice(2))));
+$('t-captions').closest('[role="tablist"]').addEventListener('keydown', e => {
+  const i = tabs.indexOf(document.activeElement);
+  const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+  if (i < 0 || !step) return;
+  e.preventDefault();
+  const next = tabs[(i + step + tabs.length) % tabs.length];
+  showTab(next.id.slice(2));
+  next.focus();
+});
 
 // --- import ---
 function load(f) {
@@ -57,7 +69,12 @@ function load(f) {
   renderAll();
   enableEditing(false);
   heard = [];
+  zooms = [];
+  undoStack.length = 0;
+  lastState = null;
+  $('undo').disabled = true;
   $('fileName').textContent = f.name;
+  $('fileName').hidden = false;
   video.src = URL.createObjectURL(f);
 }
 $('file').onchange = e => load(e.target.files[0]);
@@ -67,13 +84,12 @@ drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); load(e.dataTransfer.files[0]); };
 
 video.onloadedmetadata = () => {
-  // Phone clips are often 576 wide; render at least 1080 wide so captions and exports stay sharp on Reels.
-  const k = Math.max(1, 1080 / video.videoWidth);
-  canvas.width = Math.round(video.videoWidth * k);
-  canvas.height = Math.round(video.videoHeight * k);
+  sizeCanvas();
   canvas.hidden = $('changeVideo').hidden = false;
   drop.hidden = true;
-  $('transcribe').disabled = $('play').disabled = $('addClip').disabled = false;
+  for (const id of ['transcribe', 'play', 'addClip', 'addZoom', 'chatInput', 'chatSend']) $(id).disabled = false;
+  chatHints.forEach(b => (b.disabled = false));
+  lastState = snapshot();
   renderTimeline();
   seek(0); // decodes the first frame so the preview is not black
   status('Choose the spoken language, then generate captions.');
@@ -142,6 +158,9 @@ worker.onmessage = ({ data }) => {
   topicInfo = genericPool = null;
   updateCuts();
   renderAll();
+  undoStack.length = 0;
+  lastState = snapshot();
+  $('undo').disabled = true;
   enableEditing(lines.length > 0);
   if (!lines.length) return status('No speech found in this video.');
   status(`${lines.length} caption lines and ${brolls.length} b-roll moments. Finding photos…`);
@@ -158,7 +177,7 @@ function renderTranscript() {
     const chips = el('div', { className: 'chips' }, ...l.words.map(w => {
       const c = el('button', { type: 'button', className: 'chip' + (w.cut ? ' cut' : ''), textContent: w.text, title: 'Click to cut this word from the video' });
       c.setAttribute('aria-pressed', w.cut);
-      c.onclick = () => { w.cut = !w.cut; c.classList.toggle('cut', w.cut); c.setAttribute('aria-pressed', w.cut); updateCuts(); renderTimeline(); };
+      c.onclick = () => { w.cut = !w.cut; c.classList.toggle('cut', w.cut); c.setAttribute('aria-pressed', w.cut); updateCuts(); renderTimeline(); commit(); };
       return c;
     }));
     const t = el('button', { className: 't', type: 'button', textContent: fmt(l.start), onclick: () => seek(l.start) });
@@ -172,7 +191,7 @@ function renderTranscript() {
 // Whisper mishears names and slang. Replace a word everywhere, or swap in the script that was actually read.
 $('replaceBtn').onclick = () => {
   const n = replaceText(lines, $('find').value, $('repl').value);
-  if (n) { updateCuts(); renderAll(); }
+  if (n) { updateCuts(); renderAll(); commit(); }
   status(n ? `Replaced ${n} time${n > 1 ? 's' : ''}.` : `"${$('find').value.trim()}" isn't in the captions.`);
 };
 $('applyScript').onclick = () => {
@@ -181,6 +200,7 @@ $('applyScript').onclick = () => {
   lines = groupWords(aligned, { maxWords: 6, maxGap: 9 }); // the script's own line breaks decide the lines
   updateCuts();
   renderAll();
+  commit();
   status(`Captions now use your script: ${lines.length} lines, timed to your voice.`);
 };
 
@@ -205,6 +225,7 @@ async function addClip(f) {
   if ($('layout').value === 'full') { $('layout').value = 'split'; onLayout(); }
   renderBrolls();
   renderTimeline();
+  commit();
   showTab('broll');
   status(`Added ${f.name} on top of a split screen. Move the playhead and press Split to match each part to what you say.`);
 }
@@ -375,7 +396,8 @@ async function searchAll() {
   if ($('aiSearch').checked && brolls.some(b => !b.ai && b.context)) await writeSearches();
   for (const b of brolls) if (b.query) await search(b); // one at a time, to stay inside the anonymous rate limits
   const found = brolls.filter(b => b.img && b.mode !== 'text').length;
-  status(`${lines.length} caption lines, ${found} b-roll photos and ${brolls.length - found} text cards ready. Play it, then export.`);
+  const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+  status(`${n(lines.length, 'caption line')}, ${n(found, 'b-roll photo')} and ${n(brolls.length - found, 'text card')} ready. Play it, then export.`);
 }
 
 const MODE_LABEL = { full: 'Full screen', card: 'Photo card', blur: 'Blurred behind', text: 'Text card' };
@@ -399,9 +421,10 @@ function clipRow(b) {
     brolls.splice(brolls.indexOf(b), 1, ...parts);
     renderBrolls();
     renderTimeline();
+    commit();
   };
   const del = el('button', { type: 'button', className: 'btn ghost', textContent: 'Remove' });
-  del.onclick = () => { brolls = brolls.filter(x => x !== b); renderBrolls(); renderTimeline(); };
+  del.onclick = () => { brolls = brolls.filter(x => x !== b); renderBrolls(); renderTimeline(); commit(); };
   const when = el('button', { type: 'button', className: 't', textContent: `${fmt(b.start)} – ${fmt(b.end)}`, onclick: () => seek(b.start) });
   const max = b.clip.el.duration;
   return el('li', { className: 'clip' },
@@ -441,7 +464,7 @@ function renderBrolls() {
     };
     const upBtn = el('button', { type: 'button', className: 'btn ghost', textContent: 'Upload', onclick: () => up.click() });
     const del = el('button', { type: 'button', className: 'btn ghost', textContent: 'Remove' });
-    del.onclick = () => { brolls = brolls.filter(x => x !== b); renderBrolls(); renderTimeline(); };
+    del.onclick = () => { brolls = brolls.filter(x => x !== b); renderBrolls(); renderTimeline(); commit(); };
     const when = el('button', { type: 'button', className: 't', textContent: `${fmt(b.start)} – ${fmt(b.end)}`, onclick: () => seek(b.start) });
     const body = el('div', { className: 'stack' },
       el('div', { className: 'meta' }, when, mode),
@@ -464,6 +487,7 @@ $('addBroll').onclick = () => {
   brolls = [...brolls, b].sort((x, y) => x.start - y.start);
   renderBrolls();
   renderTimeline();
+  commit();
   if (b.query) search(b);
 };
 
@@ -493,6 +517,7 @@ function renderTimeline() {
   $('trackCaps').replaceChildren(
     ...lines.map(l => block(l.start, l.end, l.words.map(w => w.text).join(' '), () => { seek(l.start); showTab('captions'); })),
     ...cuts.map(([a, b]) => { const z = el('div', { className: 'cutzone' }); z.style.left = `${a * PX}px`; z.style.width = `${(b - a) * PX}px`; return z; }));
+  $('trackZoom').replaceChildren(...zooms.map(z => block(z.start, z.end, `${z.amount.toFixed(2)}×`, () => { seek(z.start); showTab('zoom'); })));
   $('trackBroll').replaceChildren(...brolls.map(b => block(b.start, b.end, b.clip ? `▶ ${b.clip.name}` : b.mode === 'text' ? `${b.label || b.query} (text)` : b.img ? b.query : `${b.query || 'b-roll'} (no photo)`, () => { seek(b.start); showTab('broll'); })));
 }
 $('tracks').onclick = e => {
@@ -503,6 +528,7 @@ $('tracks').onclick = e => {
 function renderAll() {
   renderTranscript();
   renderBrolls();
+  renderZooms();
   renderTimeline();
 }
 
@@ -520,10 +546,7 @@ const galleries = Object.entries(PRESETS).map(([key, p]) => {
   const b = el('button', { type: 'button', className: 'preset' }, c, el('span', { textContent: p.name }));
   b.setAttribute('aria-pressed', key === preset);
   b.setAttribute('aria-label', `${p.name} caption style`);
-  b.onclick = () => {
-    preset = key;
-    document.querySelectorAll('.preset').forEach(x => x.setAttribute('aria-pressed', x === b));
-  };
+  b.onclick = () => { setPreset(key); commit(); };
   $('presets').append(b);
   return { c, p };
 });
@@ -532,8 +555,8 @@ function drawGallery(now) {
   for (const { c, p } of galleries) {
     const g = c.getContext('2d');
     const bg = g.createLinearGradient(0, 0, 0, 200);
-    bg.addColorStop(0, '#3b3247');
-    bg.addColorStop(1, '#121016');
+    bg.addColorStop(0, '#191a1b');
+    bg.addColorStop(1, '#010102');
     g.fillStyle = bg;
     g.fillRect(0, 0, 150, 200);
     drawCaption(g, 150, 200, SAMPLE, t, p, { size: 9, pos: 62, upper: true, index: 0 });
@@ -549,13 +572,171 @@ function onLayout() {
 }
 $('layout').onchange = onLayout;
 
+// --- scale ---
+const radio = name => document.querySelector(`input[name="${name}"]:checked`).value;
+const setRadio = (name, value) => { const r = document.querySelector(`input[name="${name}"][value="${value}"]`); if (r) r.checked = true; };
+const RATIOS = { '9:16': 9 / 16, '4:5': 4 / 5, '1:1': 1, '16:9': 16 / 9 };
+// Short side 1080 keeps captions and exports sharp on Reels and YouTube; H.264 needs even sizes.
+function sizeCanvas() {
+  if (!video.videoWidth) return;
+  const r = RATIOS[radio('ratio')] ?? video.videoWidth / video.videoHeight;
+  const even = n => Math.round(n / 2) * 2;
+  [canvas.width, canvas.height] = r <= 1 ? [1080, even(1080 / r)] : [even(1080 * r), 1080];
+}
+document.querySelectorAll('input[name="ratio"]').forEach(r => (r.onchange = sizeCanvas));
+
+// The speaker in the chosen format: cropped to fill (keeping the chosen part of the frame), or whole over a blurred copy.
+function drawFramed(W, H, z) {
+  const sw = video.videoWidth, sh = video.videoHeight;
+  if (radio('fit') === 'fit' && Math.abs(sw / sh - W / H) > 0.01) {
+    ctx.save();
+    ctx.filter = 'blur(28px) brightness(0.55)';
+    drawCover(ctx, video, sw, sh, 0, 0, W, H, 1.15);
+    ctx.restore();
+    const k = Math.min(W / sw, H / sh) * z;
+    ctx.drawImage(video, (W - sw * k) / 2, (H - sh * k) / 2, sw * k, sh * k);
+  } else drawCover(ctx, video, sw, sh, 0, 0, W, H, z, +$('anchor').value / 100);
+}
+
+// --- zoom ---
+// Manual zooms ease in and out over a quarter second, like a camera push rather than a cut.
+function zoomAt(t) {
+  let z = 1;
+  for (const m of zooms) if (t >= m.start && t < m.end) z = Math.max(z, 1 + (m.amount - 1) * Math.min(1, (t - m.start) / 0.25, (m.end - t) / 0.25));
+  return z;
+}
+function addZoom(at, dur = 1.5, amount = 1.2) {
+  const start = Math.max(0, Math.min(at, video.duration - 0.5));
+  zooms = [...zooms, { start, end: Math.min(video.duration, start + dur), amount }].sort((a, b) => a.start - b.start);
+}
+$('addZoom').onclick = () => { addZoom(video.currentTime); renderZooms(); renderTimeline(); commit(); };
+function renderZooms() {
+  $('zooms').replaceChildren(...zooms.map(z => {
+    const when = el('button', { type: 'button', className: 't', textContent: `${fmt(z.start)} – ${fmt(z.end)}`, onclick: () => seek(z.start) });
+    const amount = el('input', { type: 'range', min: '1.05', max: '1.6', step: '0.05', value: z.amount });
+    amount.oninput = () => { z.amount = +amount.value; renderTimeline(); };
+    const len = el('input', { type: 'number', min: '0.5', max: '10', step: '0.5', value: (z.end - z.start).toFixed(1) });
+    len.onchange = () => { z.end = Math.min(video.duration, z.start + Math.max(0.5, +len.value)); renderTimeline(); };
+    const del = el('button', { type: 'button', className: 'btn secondary', textContent: 'Remove' });
+    del.onclick = () => { zooms = zooms.filter(x => x !== z); renderZooms(); renderTimeline(); commit(); };
+    return el('li', {}, el('div', { className: 'stack' },
+      el('div', { className: 'meta' }, when, del),
+      el('div', { className: 'field-row' }, el('label', {}, 'Strength', amount), el('label', {}, 'Length (s)', len))));
+  }));
+  if (!zooms.length && video.duration) $('zooms').append(el('li', { className: 'hint', textContent: 'No zooms yet. Move the playhead to a moment and add one.' }));
+}
+
+// --- style presets ---
+function setPreset(key) {
+  preset = key;
+  document.querySelectorAll('.preset').forEach(x => x.setAttribute('aria-pressed', x.getAttribute('aria-label') === `${PRESETS[key].name} caption style`));
+}
+
+// --- undo ---
+// Every edit records the state before it. Photos and clips are kept by reference, so undo is cheap.
+const CONTROLS = ['size', 'pos', 'upper', 'zoom', 'fillers', 'silences', 'silence', 'layout', 'anchor', 'denoise', 'level'];
+const undoStack = [];
+let lastState = null;
+function snapshot() {
+  return {
+    lines: lines.map(l => ({ ...l, words: l.words.map(w => ({ ...w })) })),
+    brolls: brolls.map(b => ({ ...b, ...(b.clip && { clip: { ...b.clip } }) })),
+    zooms: zooms.map(z => ({ ...z })),
+    preset, ratio: radio('ratio'), fit: radio('fit'),
+    controls: Object.fromEntries(CONTROLS.map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value])),
+  };
+}
+function commit() {
+  if (lastState) { undoStack.push(lastState); if (undoStack.length > 60) undoStack.shift(); }
+  lastState = snapshot();
+  $('undo').disabled = !undoStack.length;
+}
+function undo() {
+  const s = undoStack.pop();
+  if (!s) return status('Nothing to undo.');
+  ({ lines, brolls, zooms } = s);
+  setPreset(s.preset);
+  setRadio('ratio', s.ratio);
+  setRadio('fit', s.fit);
+  for (const [id, v] of Object.entries(s.controls)) $(id).type === 'checkbox' ? ($(id).checked = v) : ($(id).value = v);
+  $('silOut').textContent = $('silence').value;
+  sizeCanvas();
+  updateCuts();
+  renderAll();
+  lastState = snapshot();
+  $('undo').disabled = !undoStack.length;
+  status('Undone.');
+}
+$('undo').onclick = undo;
+// Sliders, checkboxes, selects and caption edits all end in a change event; one listener records them.
+const NOT_EDITS = new Set(['lang', 'capLang', 'model', 'aiSearch', 'pexelsKey', 'unsplashKey', 'file', 'clipFile', 'find', 'repl', 'script', 'chatInput']);
+document.querySelector('.panel').addEventListener('change', e => {
+  if (!NOT_EDITS.has(e.target.id) && e.target.type !== 'file' && video.duration) commit();
+});
+
+// --- chat to edit ---
+const PRESET_NAMES = Object.fromEntries(Object.entries(PRESETS).map(([k, p]) => [k, p.name]));
+const clampTo = (id, v) => String(Math.min(+$(id).max, Math.max(+$(id).min, v)));
+function runAction(a) {
+  switch (a.type) {
+    case 'style': setPreset(a.preset); return `Captions now use ${PRESETS[a.preset].name}.`;
+    case 'size': $('size').value = clampTo('size', +$('size').value + a.delta); return a.delta > 0 ? 'Captions are bigger.' : 'Captions are smaller.';
+    case 'pos': $('pos').value = clampTo('pos', a.value ?? +$('pos').value + a.delta); return 'Moved the captions.';
+    case 'upper': $('upper').checked = a.on; return a.on ? 'Captions are in capital letters.' : 'Captions are in normal case.';
+    case 'fillers': $('fillers').checked = a.on; updateCuts(); return a.on ? 'Filler words are cut.' : 'Filler words are kept.';
+    case 'silences':
+      $('silences').checked = a.on;
+      if (a.sec) { $('silence').value = clampTo('silence', a.sec); $('silOut').textContent = $('silence').value; }
+      updateCuts();
+      return a.on ? `Pauses longer than ${$('silence').value} s are cut.` : 'Pauses are kept.';
+    case 'zoom': addZoom(a.at, a.dur, a.amount); return `Zoom added at ${fmt(Math.min(a.at, video.duration))}.`;
+    case 'clearZooms': zooms = []; return 'Removed every zoom.';
+    case 'autoZoom': $('zoom').checked = a.on; return a.on ? 'Punch-ins on every third line are on.' : 'Automatic punch-ins are off.';
+    case 'broll': {
+      const t = Math.min(a.at, Math.max(0, video.duration - 0.5));
+      const line = lines.find(l => t >= l.start && t < l.end) ?? lines.find(l => l.start >= t);
+      const query = a.query || (line ? pickKeyword(line.words.map(w => w.text).join(' ')) ?? '' : '');
+      if (!query) return 'Say what the photo should show, for example "add a photo of a ps5 here".';
+      const b = { id: nextId++, start: t, end: Math.min(t + a.dur, video.duration), query, label: query, context: line?.words.map(w => w.text).join(' '), mode: 'full', planned: 'full', options: [], pick: 0 };
+      brolls = [...brolls, b].sort((x, y) => x.start - y.start);
+      search(b);
+      return `Looking for a photo of "${query}" at ${fmt(t)}.`;
+    }
+    case 'clearBroll': brolls = brolls.filter(b => b.clip); return 'Removed the photo b-roll.';
+    case 'ratio': setRadio('ratio', a.value); sizeCanvas(); return a.value === 'original' ? 'Back to the original shape.' : `The video is now ${a.value}.`;
+    case 'fit': setRadio('fit', a.value); return a.value === 'fit' ? 'The whole frame shows, with blurred edges.' : 'The frame fills and crops.';
+    case 'layout': $('layout').value = a.value; onLayout(); return a.value === 'split' ? 'Split screen is on.' : 'Full screen layout is on.';
+    case 'replace': { const n = replaceText(lines, a.from, a.to); return n ? `Replaced "${a.from}" ${n} time${n > 1 ? 's' : ''}.` : `"${a.from}" isn't in the captions.`; }
+    case 'denoise': $('denoise').checked = a.on; return a.on ? 'Background noise will be reduced.' : 'Noise reduction is off.';
+    case 'level': $('level').checked = a.on; return a.on ? 'Loudness will be evened out.' : 'Loudness levelling is off.';
+  }
+}
+function applyChat(text) {
+  const { actions, unknown } = parseCommand(text, { presets: PRESET_NAMES, now: video.currentTime });
+  if (actions.some(a => a.type === 'undo')) { undo(); return; }
+  const done = actions.filter(a => a.type !== 'export').map(runAction);
+  if (done.length) { updateCuts(); renderAll(); commit(); }
+  const miss = unknown.length ? `I didn't get "${unknown.join('", "')}". Try: ${CHAT_EXAMPLES.slice(0, 4).join(' · ')}.` : '';
+  status([...done, miss].filter(Boolean).join(' '));
+  if (actions.some(a => a.type === 'export')) $('export').click();
+}
+$('chat').onsubmit = e => {
+  e.preventDefault();
+  const text = $('chatInput').value.trim();
+  if (!text || !video.duration) return;
+  applyChat(text);
+  $('chatInput').value = '';
+};
+const chatHints = CHAT_EXAMPLES.slice(0, 5).map(x => el('button', { type: 'button', textContent: x, disabled: true, onclick: () => applyChat(x) }));
+$('chatHints').append(...chatHints);
+
 // --- preview loop ---
 let lastLine = -1, lastBroll = -1;
 function drawFrame(t) {
   const W = canvas.width, H = canvas.height;
   const li = lines.findLastIndex(l => t >= l.start && t < l.end + 0.3);
-  // Punch-in: every third line jumps 12% closer, the way editors cut talking heads.
-  const z = $('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1;
+  // Punch-in: every third line jumps 12% closer, the way editors cut talking heads. Manual zooms ease in and out.
+  const z = Math.max($('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1, zoomAt(t));
   // Captions-on-green export: a flat key colour that any editor can remove to layer the captions over another edit.
   ctx.fillStyle = green ? '#00ff00' : '#000';
   ctx.fillRect(0, 0, W, H);
@@ -573,7 +754,7 @@ function drawFrame(t) {
     for (const b of brolls) drawBroll(ctx, W, top, b, t, video);
     ctx.restore();
   } else if (!green) {
-    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, z);
+    drawFramed(W, H, z);
     for (const b of brolls) drawBroll(ctx, W, H, b, t, video);
   }
   if (li >= 0) drawCaption(ctx, W, H, lines[li], t, PRESETS[preset], { ...settings(), index: li });
@@ -628,6 +809,7 @@ $('play').onclick = () => (video.paused ? video.play() : video.pause());
 video.onplay = () => ($('play').textContent = 'Pause');
 video.onpause = () => ($('play').textContent = 'Play');
 document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey && !e.target.closest('input, textarea')) { e.preventDefault(); undo(); return; }
   if (e.code !== 'Space' || e.target.closest('input, textarea, select, button') || $('play').disabled) return;
   e.preventDefault();
   $('play').click();

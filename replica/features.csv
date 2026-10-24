@@ -23,7 +23,10 @@ B-roll layouts (full / card / blurred background),broll,should,yes,yes,
 Swap / upload / re-search b-roll,broll,should,yes,yes,
 Punch-in zoom,edit,should,yes,yes,every third line
 Timeline with caption and b-roll tracks,editor,should,yes,yes,
-Chat to edit,editor,could,yes,no,needs an LLM; not in-browser yet
+Chat to edit,editor,should,yes,yes,rule-based parser (chat.js); instant and offline
 Stock video b-roll,broll,could,yes,no,photos only
 AI-written b-roll searches,broll,should,yes,yes,Qwen2.5-0.5B in the browser (optional)
 Pexels and Unsplash photo sources,broll,should,yes,yes,user's own free keys
+Scale / aspect ratio (9:16 4:5 1:1 16:9),scale,must,yes,yes,fill+crop with crop position or fit with blurred edges
+Manual zoom at playhead,zoom,should,yes,yes,eased; strength and length per zoom
+Undo,editor,must,yes,yes,Ctrl+Z; 60 steps
