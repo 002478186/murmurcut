@@ -63,7 +63,7 @@ $('t-captions').closest('[role="tablist"]').addEventListener('keydown', e => {
 // --- import ---
 function load(f) {
   if (exporting) return status('Wait for the export to finish first.');
-  if (!/^(video|audio)\//.test(f?.type)) return status('That file is not a video. Choose an MP4, MOV or WebM file.');
+  if (!/^(video|audio)\//.test(f?.type) && !/\.(mov|mp4|m4v|webm|wav|mp3|m4a)$/i.test(f?.name)) return status('That file is not a video. Choose an MP4, MOV or WebM file.');
   file = f;
   lines = [];
   brolls = [];
@@ -80,7 +80,9 @@ function load(f) {
   $('undo').disabled = true;
   $('fileName').textContent = f.name;
   $('fileName').hidden = false;
+  status(`Opening ${f.name}…`);
   video.src = URL.createObjectURL(f);
+  video.load(); // iPhone Safari waits for this before reading the video
 }
 $('file').onchange = e => load(e.target.files[0]);
 const drop = $('drop');
