@@ -17,6 +17,7 @@
     <span id="fileName" class="file"></span>
     <label for="file" class="btn ghost" id="changeVideo" hidden>Change video</label>
     <button id="srt" class="btn ghost" type="button" disabled>Download .srt</button>
+    <button id="exportGreen" class="btn ghost" type="button" disabled title="Only the captions, on a green screen you can key out in any editor">Captions on green</button>
     <button id="export" class="btn primary" type="button" disabled>Export video</button>
   </header>
 
@@ -39,7 +40,7 @@
         <button role="tab" type="button" aria-selected="true" aria-controls="tab-captions" id="t-captions">Captions</button>
         <button role="tab" type="button" aria-selected="false" aria-controls="tab-style" id="t-style">Style</button>
         <button role="tab" type="button" aria-selected="false" aria-controls="tab-broll" id="t-broll">B-roll</button>
-        <button role="tab" type="button" aria-selected="false" aria-controls="tab-cuts" id="t-cuts">Cuts</button>
+        <button role="tab" type="button" aria-selected="false" aria-controls="tab-cuts" id="t-cuts">Cuts &amp; sound</button>
       </nav>
 
       <div role="tabpanel" id="tab-captions" aria-labelledby="t-captions" class="pane">
@@ -70,10 +71,27 @@
         </label>
         <p class="hint" id="langHint"></p>
         <button id="transcribe" class="btn primary wide" type="button" disabled>Generate captions and b-roll</button>
+        <details class="sources" id="fixWords">
+          <summary>Fix the words</summary>
+          <p class="hint">Whisper mishears names and slang. Replace a word everywhere, or paste the script you read: murmurcut keeps the timing of your voice and uses your exact words, in any language or mix like Hinglish. Each script line becomes one caption line.</p>
+          <div class="field-row">
+            <label>Find <input id="find" type="text" placeholder="Capsule"></label>
+            <label>Replace with <input id="repl" type="text" placeholder="Kapso"></label>
+          </div>
+          <button id="replaceBtn" class="btn ghost" type="button" disabled>Replace everywhere</button>
+          <label>Your script <textarea id="script" rows="6" placeholder="Copy paste band karo.&#10;Claude ko WhatsApp do."></textarea></label>
+          <button id="applyScript" class="btn ghost" type="button" disabled>Use my script</button>
+        </details>
         <ol id="lines" class="lines"></ol>
       </div>
 
       <div role="tabpanel" id="tab-style" aria-labelledby="t-style" class="pane" hidden>
+        <label>Layout
+          <select id="layout">
+            <option value="full">Full screen: you, with b-roll over you</option>
+            <option value="split">Split screen: b-roll on top, you below</option>
+          </select>
+        </label>
         <div id="presets" class="presets"></div>
         <label>Size <input id="size" type="range" min="3" max="12" step="0.5" value="6"></label>
         <label>Position <input id="pos" type="range" min="12" max="90" value="72"></label>
@@ -97,6 +115,9 @@
           <button id="addBroll" class="btn ghost" type="button" disabled>Add at playhead</button>
           <button id="researchAll" class="btn ghost" type="button" disabled>Search all again</button>
         </div>
+        <button id="addClip" class="btn ghost wide" type="button" disabled>Add a video clip (screen recording, gameplay…)</button>
+        <input id="clipFile" type="file" accept="video/*" multiple hidden>
+        <p class="hint">A clip plays from the playhead to the end, on a split screen. Move the playhead and press Split at playhead to line each part up with what you say.</p>
         <ol id="brolls" class="brolls"></ol>
         <details class="credits">
           <summary>Photo credits</summary>
@@ -110,6 +131,10 @@
         <label class="check"><input id="silences" type="checkbox"> Remove pauses longer than <output id="silOut">0.8</output> s</label>
         <input id="silence" type="range" min="0.3" max="3" step="0.1" value="0.8" aria-label="Pause length to remove">
         <p class="hint">To cut a single word, open Captions and click it. Cut parts show in red on the timeline.</p>
+        <h3 class="sub">Sound</h3>
+        <label class="check"><input id="denoise" type="checkbox" checked> Reduce background noise (fans, traffic, hum)</label>
+        <label class="check"><input id="level" type="checkbox" checked> Even out the loudness</label>
+        <p class="hint">Applied when you export. Noise reduction uses RNNoise, which downloads about 5 MB the first time.</p>
       </div>
     </section>
 

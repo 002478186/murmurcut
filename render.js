@@ -136,17 +136,29 @@ function drawSpotlight(ctx, W, H, ws, texts, t, p, o, s) {
 }
 
 // Cover-fit an image or video frame into a box, optionally scaled about its centre (Ken Burns).
-export function drawCover(ctx, src, sw, sh, x, y, w, h, zoom = 1) {
+// ay picks which part survives a vertical crop: 0 keeps the top, 0.5 the middle.
+export function drawCover(ctx, src, sw, sh, x, y, w, h, zoom = 1, ay = 0.5) {
   const k = Math.max(w / sw, h / sh) * zoom;
-  ctx.drawImage(src, x + (w - sw * k) / 2, y + (h - sh * k) / 2, sw * k, sh * k);
+  ctx.drawImage(src, x + (w - sw * k) / 2, y + (h - sh * k) * ay, sw * k, sh * k);
 }
 
-// item: { start, end, mode, query, label, img }
+// The speaker on the bottom of a split screen: heads sit high in a phone frame, so crop from near the top.
+export function drawSpeaker(ctx, video, x, y, w, h) {
+  ctx.save();
+  ctx.filter = 'blur(24px) brightness(0.7)';
+  drawCover(ctx, video, video.videoWidth, video.videoHeight, x, y, w, h, 1.15);
+  ctx.restore();
+  drawCover(ctx, video, video.videoWidth, video.videoHeight, x, y, w, h, 1, 0.2);
+}
+
+// item: { start, end, mode, query, label, img } for a photo, or { clip: { el, from, to } } for a second video.
 export function drawBroll(ctx, W, H, item, t, video) {
-  const img = item.img;
+  const img = item.clip?.el ?? item.img;
   if ((!img && item.mode !== 'text') || t < item.start || t >= item.end) return;
+  const iw = item.clip ? img.videoWidth : img?.naturalWidth, ih = item.clip ? img.videoHeight : img?.naturalHeight;
   const d = item.end - item.start, age = t - item.start;
-  const fade = Math.min(1, age / 0.2, (item.end - t) / 0.2);
+  // Clips are footage split into pieces; a fade at every split would flicker, so only photos fade.
+  const fade = item.clip ? 1 : Math.min(1, age / 0.2, (item.end - t) / 0.2);
   ctx.save();
   ctx.globalAlpha = fade;
   if (item.mode === 'text') {
@@ -172,9 +184,9 @@ export function drawBroll(ctx, W, H, item, t, video) {
     ctx.beginPath();
     ctx.rect(0, 0, W, H);
     ctx.clip();
-    drawCover(ctx, img, img.naturalWidth, img.naturalHeight, 0, 0, W, H, 1.04 + 0.08 * (age / d));
+    drawCover(ctx, img, iw, ih, 0, 0, W, H, item.clip ? 1 : 1.04 + 0.08 * (age / d)); // no drift over screen text
   } else if (item.mode === 'card') {
-    const w = W * 0.74, h = Math.min(H * 0.42, (w * img.naturalHeight) / img.naturalWidth);
+    const w = W * 0.74, h = Math.min(H * 0.42, (w * ih) / iw);
     const k = 0.86 + 0.14 * Math.min(1, age / 0.22);
     ctx.translate(W / 2, H * 0.34);
     ctx.scale(k, k);
@@ -190,7 +202,7 @@ export function drawBroll(ctx, W, H, item, t, video) {
     ctx.beginPath();
     ctx.roundRect(-w / 2, -h / 2, w, h, r);
     ctx.clip();
-    drawCover(ctx, img, img.naturalWidth, img.naturalHeight, -w / 2, -h / 2, w, h);
+    drawCover(ctx, img, iw, ih, -w / 2, -h / 2, w, h);
   } else {
     // blur: the speaker blurred behind the image, the image as a framed square
     ctx.filter = 'blur(18px) brightness(0.75)';
@@ -202,7 +214,7 @@ export function drawBroll(ctx, W, H, item, t, video) {
     ctx.beginPath();
     ctx.roundRect(-w / 2, -w / 2, w, w, W * 0.04);
     ctx.clip();
-    drawCover(ctx, img, img.naturalWidth, img.naturalHeight, -w / 2, -w / 2, w, w);
+    drawCover(ctx, img, iw, ih, -w / 2, -w / 2, w, w);
   }
   ctx.restore();
 }

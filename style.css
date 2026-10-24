@@ -103,3 +103,9 @@ input[type="range"], input[type="checkbox"] { accent-color: var(--caps); }
   .file { order: 5; flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+
+/* second-video clips in the b-roll list */
+.brolls li.clip { border-left-color: var(--accent, #FFC53D); }
+.brolls .clipthumb { display: grid; place-items: center; font-size: 22px; color: var(--text); }
+.brolls input[type="number"], .field-row input[type="text"] { font: inherit; font-size: 14px; color: var(--text); background: var(--ink); border: 1px solid var(--rule); border-radius: 10px; padding: 6px 8px; width: 100%; }
+.sub { font-size: 14px; margin: 14px 0 2px; }

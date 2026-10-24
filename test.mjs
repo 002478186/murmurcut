@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, pickKeyword, planBroll, toSegments, emphasisIndex, topicOf, isAbstract, cleanQuery, dropCommon, domainOf } from './captions.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, pickKeyword, planBroll, toSegments, emphasisIndex, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, toOutput, toSource, splitClip, clipTime } from './captions.js';
 
 const words = toWords([
   { text: ' Hello', timestamp: [0, 0.4] },
@@ -77,5 +77,77 @@ assert.equal(domainOf('2026 video game'), 'video game');
 assert.equal(domainOf('Capital of Maharashtra, India'), 'Capital');
 assert.equal(domainOf('Person who is paid to undertake a specialized set of tasks'), 'Person');
 assert.equal(domainOf(undefined), '');
+
+// Paste-your-script: the real script's words take the misheard transcript's timing, script lines become caption lines.
+{
+  const heard = toWords(['Copy', 'Piss', 'Burn', 'and', 'Cloud', 'Code', 'in', 'WhatsApp'].map((text, i) => ({ text, timestamp: [i * 0.5, i * 0.5 + 0.4] })));
+  const aligned = alignScript('Copy paste band karo.\nClaude ko WhatsApp do.', heard);
+  assert.deepEqual(aligned.map(w => w.text), ['Copy', 'paste', 'band', 'karo.', 'Claude', 'ko', 'WhatsApp', 'do.']);
+  assert.equal(aligned[0].start, 0);
+  assert.ok(Math.abs(aligned.at(-1).end - 3.9) < 1e-9);
+  assert.ok(aligned.every((w, i) => i === 0 || w.start >= aligned[i - 1].start));
+  assert.deepEqual(groupWords(aligned, { maxWords: 6 }).map(l => l.words.length), [4, 4]); // the line break wins over maxWords
+  // A shorter script spreads over the same span instead of bunching at the start.
+  const short = alignScript('one two', heard);
+  assert.equal(short[1].start, 2);
+  assert.deepEqual(alignScript('', heard), []);
+  // Pauses survive: no script word may stretch across a silence Whisper heard, or "remove pauses" finds nothing.
+  const paused = toWords(['a', 'b', 'c', 'd'].map((text, i) => ({ text, timestamp: i < 2 ? [i, i + 1] : [i + 3, i + 4] })));
+  const spread = alignScript('one two three four five', paused);
+  const gaps = spread.slice(1).map((w, i) => w.start - spread[i].end);
+  assert.ok(Math.max(...gaps) >= 2.9, `the 3 s pause is kept (largest gap ${Math.max(...gaps)})`);
+  assert.equal(cutRanges(spread, { silence: 1 }).length, 1);
+  assert.deepEqual(alignScript('x', []), []);
+}
+
+// Find and replace: whole words, any case, timings kept when the word count matches.
+{
+  const ls = groupWords(toWords(['Log', 'in', 'to', 'Capsule.', 'Capsule.com', 'capsule'].map((text, i) => ({ text, timestamp: [i, i + 1] }))), { maxWords: 9 });
+  assert.equal(replaceText(ls, 'capsule', 'Kapso'), 3); // "Capsule.com" becomes "Kapso.com" too
+  assert.equal(ls.flatMap(l => l.words.map(w => w.text)).join(' '), 'Log in to Kapso. Kapso.com Kapso');
+  assert.equal(ls[0].words[3].start, 3);
+  assert.equal(replaceText(ls, '  ', 'x'), 0);
+  assert.equal(replaceText(ls, 'C++', 'x'), 0); // regex characters are literal
+}
+
+// Cut-aware times: the SRT and the export use the cut video's clock.
+{
+  const cs = [[1, 2], [3, 3.5]];
+  assert.equal(toOutput(0.5, cs), 0.5);
+  assert.equal(toOutput(1.5, cs), 1);
+  assert.equal(toOutput(2.5, cs), 1.5);
+  assert.equal(toOutput(4, cs), 2.5);
+  for (const t of [0, 0.5, 2, 2.9, 3.5, 4, 7]) assert.ok(Math.abs(toSource(toOutput(t, cs), cs) - t) < 1e-9, `round trip ${t}`);
+  assert.match(toSrt([{ start: 2.5, end: 4, words: [{ text: 'hi', cut: false }] }], cs), /00:00:01,500 --> 00:00:02,500/);
+}
+
+// Second-video clips: splitting keeps the footage continuous; clip time follows the timeline.
+{
+  const item = { start: 0, end: 30, clip: { from: 0, to: 10 } };
+  const [a, b] = splitClip(item, 15);
+  assert.deepEqual([a.end, a.clip.to, b.start, b.clip.from, b.clip.to], [15, 5, 15, 5, 10]);
+  assert.equal(splitClip(item, 0.05).length, 1);
+  assert.equal(clipTime(item, 3), 1);
+  assert.equal(clipTime(item, 99), 10);
+}
+
+// Export audio: cuts remove exactly their samples and fade the joins; levelling hits the target without clipping.
+{
+  const { cutAudio, levelAudio } = await import('./audio.js');
+  const rate = 1000;
+  const ch = new Float32Array(3000).fill(0.5);
+  const [out] = cutAudio([ch], [[1, 2]], rate);
+  assert.equal(out.length, 2000);
+  assert.equal(out[500], 0.5);
+  assert.ok(out[999] < 0.1 && out[1000] < 0.1, 'the join is faded');
+  assert.equal(out[0], 0.5, 'the very start is not faded');
+  assert.equal(cutAudio([ch], [], rate)[0].length, 3000);
+  assert.equal(cutAudio([ch], [[2.5, 9]], rate)[0].length, 2500, 'a cut past the end is clamped');
+  const quiet = [Float32Array.from({ length: 4000 }, (_, i) => (i < 2000 ? 0.01 * Math.sin(i) : 0))];
+  levelAudio(quiet, rate, -16, -1);
+  assert.ok(Math.max(...quiet[0].map(Math.abs)) <= 10 ** (-1 / 20) + 1e-6, 'peaks stay under -1 dBFS');
+  assert.ok(Math.max(...quiet[0].map(Math.abs)) > 0.1, 'quiet speech is lifted');
+  assert.equal(levelAudio([new Float32Array(100)], rate), 1, 'silence is left alone');
+}
 
 console.log('ok');

@@ -14,7 +14,8 @@ export function groupWords(words, { maxWords = 4, maxGap = 0.6 } = {}) {
   const lines = [];
   let cur = null;
   for (const w of words) {
-    if (!cur || cur.words.length >= maxWords || w.start - cur.end > maxGap || /[.?!]$/.test(cur.words.at(-1).text)) {
+    const prev = cur?.words.at(-1);
+    if (!cur || cur.words.length >= maxWords || w.start - cur.end > maxGap || /[.?!]$/.test(prev.text) || prev.br) {
       cur = { start: w.start, end: w.end, words: [] };
       lines.push(cur);
     }
@@ -34,6 +35,49 @@ export function editLine(line, text) {
   const step = (line.end - line.start) / Math.max(tokens.length, 1);
   line.words = tokens.map((t, i) => ({ text: t, start: line.start + i * step, end: line.start + (i + 1) * step, cut: false }));
   return line;
+}
+
+// Swap Whisper's words for the script that was actually read, keeping Whisper's timing. Script word i takes the
+// slot at the same relative position in the transcript, so a translated or misheard transcript still times it well.
+// A line break in the script ends a caption line (`br`).
+export function alignScript(script, words) {
+  const rows = script.split('\n').map(r => r.trim().split(/\s+/).filter(Boolean)).filter(r => r.length);
+  const toks = rows.flatMap(r => r.map((text, i) => ({ text, br: i === r.length - 1 })));
+  if (!toks.length || !words.length) return [];
+  const n = words.length;
+  const at = x => {
+    const k = Math.min(Math.floor(x), n - 1);
+    return words[k].start + (words[k].end - words[k].start) * Math.min(1, x - k);
+  };
+  // Silences Whisper heard. A script word that straddles one moves to the side it mostly sits on,
+  // so the pause stays empty and "remove pauses" can still find it.
+  const gaps = words.slice(1).map((w, k) => [words[k].end, w.start]).filter(([a, b]) => b - a > 0.3);
+  return toks.map(({ text, br }, i) => {
+    let start = at((i / toks.length) * n), end = at(((i + 1) / toks.length) * n);
+    for (const [a, b] of gaps) {
+      if (start < a && end > b) {
+        if (a - start >= end - b) end = a;
+        else start = b;
+      }
+    }
+    return { text, br, start, end: Math.max(start + 0.05, end), cut: false };
+  });
+}
+
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Replace a misheard word or phrase in every caption line ("Capsule" -> "Kapso"). Whole words only, any case.
+// Returns how many were replaced.
+export function replaceText(lines, find, repl) {
+  if (!find.trim()) return 0;
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(find.trim())}(?![\\p{L}\\p{N}])`, 'giu');
+  let n = 0;
+  for (const l of lines) {
+    const text = l.words.map(w => w.text).join(' ');
+    const next = text.replace(re, () => (n++, repl.trim()));
+    if (next !== text) editLine(l, next);
+  }
+  return n;
 }
 
 // Ranges of the timeline to skip: words marked cut, fillers, long silences. Sorted and merged.
@@ -59,6 +103,38 @@ export function skipCut(t, cuts) {
   const c = cuts.find(([a, b]) => t >= a && t < b);
   return c ? c[1] : t;
 }
+
+// Source time -> time in the cut video, and back. Cuts are sorted and merged, as cutRanges returns them.
+export function toOutput(t, cuts) {
+  let removed = 0;
+  for (const [a, b] of cuts) {
+    if (t <= a) break;
+    removed += Math.min(t, b) - a;
+  }
+  return t - removed;
+}
+export function toSource(o, cuts) {
+  let t = o;
+  for (const [a, b] of cuts) {
+    if (t < a) break;
+    t += b - a;
+  }
+  return t;
+}
+
+// A second video laid over a stretch of the timeline, its own time running from clip.from to clip.to.
+// Splitting at t keeps both halves' footage continuous, so a screen recording can be matched to each step.
+export function splitClip(item, t) {
+  if (t <= item.start + 0.1 || t >= item.end - 0.1) return [item];
+  const at = clipTime(item, t);
+  return [
+    { ...item, end: t, clip: { ...item.clip, to: at } },
+    { ...item, start: t, clip: { ...item.clip, from: at } },
+  ];
+}
+// Where in the clip to be at timeline time t, clamped to its range.
+export const clipTime = (item, t) =>
+  item.clip.from + Math.min(1, Math.max(0, (t - item.start) / (item.end - item.start))) * (item.clip.to - item.clip.from);
 
 const STOP = new Set(('a an the and or but so if then than that this these those there here it its it\'s is are was were be been being am ' +
   'i me my we our you your he she him her they them their what which who whom when where why how all any both each few more most ' +
@@ -168,11 +244,11 @@ const ts = s => {
   return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms / 60000) % 60)}:${p(Math.floor(ms / 1000) % 60)},${p(ms % 1000, 3)}`;
 };
 
-// shortcut: SRT keeps original timings, so cuts are not reflected; fine for the uncut video.
-export function toSrt(lines) {
+// Timings follow the cut video when cuts are given, so the file matches the export.
+export function toSrt(lines, cuts = []) {
   return lines
     .map(l => ({ ...l, words: l.words.filter(w => !w.cut) }))
     .filter(l => l.words.length)
-    .map((l, i) => `${i + 1}\n${ts(l.start)} --> ${ts(l.end)}\n${l.words.map(w => w.text).join(' ')}\n`)
+    .map((l, i) => `${i + 1}\n${ts(toOutput(l.start, cuts))} --> ${ts(toOutput(l.end, cuts))}\n${l.words.map(w => w.text).join(' ')}\n`)
     .join('\n');
 }

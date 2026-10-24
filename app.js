@@ -1,5 +1,6 @@
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf } from './captions.js';
-import { PRESETS, drawCaption, drawBroll, drawCover } from './render.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, toOutput, toSource, splitClip, clipTime } from './captions.js';
+import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker } from './render.js';
+import { cutAudio, levelAudio } from './audio.js';
 
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d');
@@ -7,7 +8,13 @@ const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'modu
 const PX = 60; // timeline pixels per second
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-let file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
+const SPLIT = 0.45; // share of the frame the b-roll takes on a split screen; the speaker gets the rest
+const MUXER = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm';
+const RNNOISE = 'https://cdn.jsdelivr.net/npm/@shiguredo/rnnoise-wasm@2025.1.5/dist/rnnoise.js';
+const FPS = 30, RATE = 48000;
+
+let heard = []; // Whisper's words as heard, kept so "Use my script" can be re-applied after edits
+let green = false, file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
 
 const status = text => ($('status').textContent = text);
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -26,6 +33,8 @@ function download(blob, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 const baseName = () => file.name.replace(/\.[^.]+$/, '');
+// Everything that needs captions first.
+const enableEditing = on => ['export', 'exportGreen', 'srt', 'addBroll', 'researchAll', 'replaceBtn', 'applyScript'].forEach(id => ($(id).disabled = !on));
 
 // --- tabs ---
 const tabs = [...document.querySelectorAll('[role="tab"]')];
@@ -46,7 +55,8 @@ function load(f) {
   brolls = [];
   cuts = [];
   renderAll();
-  $('export').disabled = $('srt').disabled = $('addBroll').disabled = $('researchAll').disabled = true;
+  enableEditing(false);
+  heard = [];
   $('fileName').textContent = f.name;
   video.src = URL.createObjectURL(f);
 }
@@ -57,11 +67,13 @@ drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); load(e.dataTransfer.files[0]); };
 
 video.onloadedmetadata = () => {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  // Phone clips are often 576 wide; render at least 1080 wide so captions and exports stay sharp on Reels.
+  const k = Math.max(1, 1080 / video.videoWidth);
+  canvas.width = Math.round(video.videoWidth * k);
+  canvas.height = Math.round(video.videoHeight * k);
   canvas.hidden = $('changeVideo').hidden = false;
   drop.hidden = true;
-  $('transcribe').disabled = $('play').disabled = false;
+  $('transcribe').disabled = $('play').disabled = $('addClip').disabled = false;
   renderTimeline();
   seek(0); // decodes the first frame so the preview is not black
   status('Choose the spoken language, then generate captions.');
@@ -123,13 +135,14 @@ worker.onmessage = ({ data }) => {
   $('transcribe').disabled = false;
   if (data.type === 'error') return status(`Transcription failed: ${data.message}`);
   const ws = toWords(data.chunks);
+  heard = ws.map(w => ({ ...w }));
   lines = groupWords(ws);
   topic = topicOf(ws);
   brolls = planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, planned: b.mode, id: nextId++, options: [], pick: 0 }));
   topicInfo = genericPool = null;
   updateCuts();
   renderAll();
-  $('export').disabled = $('srt').disabled = $('addBroll').disabled = $('researchAll').disabled = !lines.length;
+  enableEditing(lines.length > 0);
   if (!lines.length) return status('No speech found in this video.');
   status(`${lines.length} caption lines and ${brolls.length} b-roll moments. Finding photos…`);
   searchAll();
@@ -153,6 +166,47 @@ function renderTranscript() {
     return el('li', {}, t, input, chips);
   });
   $('lines').replaceChildren(...lineEls);
+}
+
+// --- fixing the words ---
+// Whisper mishears names and slang. Replace a word everywhere, or swap in the script that was actually read.
+$('replaceBtn').onclick = () => {
+  const n = replaceText(lines, $('find').value, $('repl').value);
+  if (n) { updateCuts(); renderAll(); }
+  status(n ? `Replaced ${n} time${n > 1 ? 's' : ''}.` : `"${$('find').value.trim()}" isn't in the captions.`);
+};
+$('applyScript').onclick = () => {
+  const aligned = alignScript($('script').value, heard);
+  if (!aligned.length) return status('Paste the script you read first, one caption line per line.');
+  lines = groupWords(aligned, { maxWords: 6, maxGap: 9 }); // the script's own line breaks decide the lines
+  updateCuts();
+  renderAll();
+  status(`Captions now use your script: ${lines.length} lines, timed to your voice.`);
+};
+
+// --- second videos ---
+// A screen recording or any other clip, laid over the timeline as b-roll. It covers the playhead to the end;
+// split it at the playhead to line each part up with what you are saying.
+$('addClip').onclick = () => $('clipFile').click();
+$('clipFile').onchange = async e => {
+  for (const f of e.target.files) await addClip(f).catch(err => status(err.message));
+  e.target.value = '';
+};
+async function addClip(f) {
+  if (!f.type.startsWith('video/')) throw new Error(`${f.name} is not a video.`);
+  const el = Object.assign(document.createElement('video'), { muted: true, playsInline: true, preload: 'auto', src: URL.createObjectURL(f) });
+  await new Promise((res, rej) => {
+    el.onloadeddata = res;
+    el.onerror = () => rej(new Error(`This browser can't play ${f.name}. Try an MP4 (H.264) or WebM.`));
+  });
+  const start = Math.min(video.currentTime, Math.max(0, video.duration - 1));
+  const b = { id: nextId++, start, end: video.duration, mode: 'full', clip: { el, from: 0, to: el.duration, name: f.name }, query: '', label: f.name, options: [], pick: 0 };
+  brolls = [...brolls, b].sort((x, y) => x.start - y.start);
+  if ($('layout').value === 'full') { $('layout').value = 'split'; onLayout(); }
+  renderBrolls();
+  renderTimeline();
+  showTab('broll');
+  status(`Added ${f.name} on top of a split screen. Move the playhead and press Split to match each part to what you say.`);
 }
 
 // --- b-roll ---
@@ -326,8 +380,47 @@ async function searchAll() {
 
 const MODE_LABEL = { full: 'Full screen', card: 'Photo card', blur: 'Blurred behind', text: 'Text card' };
 let brollEls = [];
+// A second-video moment: when it shows, which part of the clip plays, and a split at the playhead.
+function clipRow(b) {
+  const num = (label, value, set) => {
+    const i = el('input', { type: 'number', step: '0.1', min: '0', value: value.toFixed(1) });
+    i.onchange = () => { set(+i.value); renderBrolls(); renderTimeline(); };
+    return el('label', {}, label, i);
+  };
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const mode = el('select', {}, ...['full', 'card', 'blur'].map(v => el('option', { value: v, textContent: MODE_LABEL[v], selected: v === b.mode })));
+  mode.setAttribute('aria-label', 'How the clip appears');
+  mode.onchange = () => { b.mode = mode.value; renderBrolls(); };
+  const split = el('button', { type: 'button', className: 'btn ghost', textContent: 'Split at playhead' });
+  split.onclick = () => {
+    const parts = splitClip(b, video.currentTime);
+    if (parts.length < 2) return status('Move the playhead inside this clip, at least 0.1 s from either end, then split.');
+    parts[1].id = nextId++;
+    brolls.splice(brolls.indexOf(b), 1, ...parts);
+    renderBrolls();
+    renderTimeline();
+  };
+  const del = el('button', { type: 'button', className: 'btn ghost', textContent: 'Remove' });
+  del.onclick = () => { brolls = brolls.filter(x => x !== b); renderBrolls(); renderTimeline(); };
+  const when = el('button', { type: 'button', className: 't', textContent: `${fmt(b.start)} – ${fmt(b.end)}`, onclick: () => seek(b.start) });
+  const max = b.clip.el.duration;
+  return el('li', { className: 'clip' },
+    el('div', { className: 'thumb clipthumb', textContent: '▶' }),
+    el('div', { className: 'stack' },
+      el('div', { className: 'meta' }, when, mode),
+      el('p', { className: 'hint', textContent: b.clip.name }),
+      el('div', { className: 'field-row' },
+        num('Shows from (s)', b.start, v => (b.start = clamp(v, 0, b.end - 0.2))),
+        num('until (s)', b.end, v => (b.end = clamp(v, b.start + 0.2, video.duration)))),
+      el('div', { className: 'field-row' },
+        num('Clip from (s)', b.clip.from, v => (b.clip.from = clamp(v, 0, max))),
+        num('to (s)', b.clip.to, v => (b.clip.to = clamp(v, 0, max)))),
+      el('div', { className: 'actions' }, split, del)));
+}
+
 function renderBrolls() {
   brollEls = brolls.map(b => {
+    if (b.clip) return clipRow(b);
     const thumb = el('img', { className: 'thumb', alt: b.img && b.mode !== 'text' ? `Photo for ${b.query}` : '' });
     if (b.img && b.mode !== 'text') thumb.src = b.img.src;
     const mode = el('select', {}, ...Object.entries(MODE_LABEL).map(([v, t]) => el('option', { value: v, textContent: t, selected: v === b.mode })));
@@ -400,7 +493,7 @@ function renderTimeline() {
   $('trackCaps').replaceChildren(
     ...lines.map(l => block(l.start, l.end, l.words.map(w => w.text).join(' '), () => { seek(l.start); showTab('captions'); })),
     ...cuts.map(([a, b]) => { const z = el('div', { className: 'cutzone' }); z.style.left = `${a * PX}px`; z.style.width = `${(b - a) * PX}px`; return z; }));
-  $('trackBroll').replaceChildren(...brolls.map(b => block(b.start, b.end, b.mode === 'text' ? `${b.label || b.query} (text)` : b.img ? b.query : `${b.query || 'b-roll'} (no photo)`, () => { seek(b.start); showTab('broll'); })));
+  $('trackBroll').replaceChildren(...brolls.map(b => block(b.start, b.end, b.clip ? `▶ ${b.clip.name}` : b.mode === 'text' ? `${b.label || b.query} (text)` : b.img ? b.query : `${b.query || 'b-roll'} (no photo)`, () => { seek(b.start); showTab('broll'); })));
 }
 $('tracks').onclick = e => {
   if (e.target.closest('.block')) return;
@@ -447,6 +540,15 @@ function drawGallery(now) {
   }
 }
 
+// --- layout ---
+// Split: b-roll on top, the speaker below. Captions move up to sit just above the speaker.
+function onLayout() {
+  const split = $('layout').value === 'split';
+  if (split && +$('pos').value === 72) $('pos').value = 40;
+  if (!split && +$('pos').value === 40) $('pos').value = 72;
+}
+$('layout').onchange = onLayout;
+
 // --- preview loop ---
 let lastLine = -1, lastBroll = -1;
 function drawFrame(t) {
@@ -454,22 +556,58 @@ function drawFrame(t) {
   const li = lines.findLastIndex(l => t >= l.start && t < l.end + 0.3);
   // Punch-in: every third line jumps 12% closer, the way editors cut talking heads.
   const z = $('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1;
-  ctx.fillStyle = '#000';
+  // Captions-on-green export: a flat key colour that any editor can remove to layer the captions over another edit.
+  ctx.fillStyle = green ? '#00ff00' : '#000';
   ctx.fillRect(0, 0, W, H);
-  drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, z);
-  for (const b of brolls) drawBroll(ctx, W, H, b, t, video);
+  if (!green && $('layout').value === 'split') {
+    const top = Math.round(H * SPLIT);
+    drawSpeaker(ctx, video, 0, top, W, H - top);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, top);
+    ctx.clip();
+    // Between b-roll moments the top shows the speaker blurred, so it is never a black hole.
+    ctx.filter = 'blur(24px) brightness(0.6)';
+    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, top, 1.2);
+    ctx.filter = 'none';
+    for (const b of brolls) drawBroll(ctx, W, top, b, t, video);
+    ctx.restore();
+  } else if (!green) {
+    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, z);
+    for (const b of brolls) drawBroll(ctx, W, H, b, t, video);
+  }
   if (li >= 0) drawCaption(ctx, W, H, lines[li], t, PRESETS[preset], { ...settings(), index: li });
   return li;
 }
 
-// shortcut: rAF pauses in background tabs, so export needs the tab visible; a WebCodecs + muxer pipeline would lift that.
+// Keep each second video at the right moment while previewing. One clip can sit in several split pieces,
+// so work per video element: play it in the piece that is on screen, pause it otherwise.
+function syncClips(t, playing) {
+  const els = new Map();
+  for (const b of brolls) if (b.clip) els.set(b.clip.el, (t >= b.start && t < b.end && b) || els.get(b.clip.el) || null);
+  for (const [cel, b] of els) {
+    if (!b) { if (!cel.paused) cel.pause(); continue; }
+    const want = clipTime(b, t);
+    if (playing) {
+      cel.playbackRate = Math.min(4, Math.max(0.25, (b.clip.to - b.clip.from) / (b.end - b.start)));
+      if (cel.paused) cel.play().catch(() => {});
+      if (Math.abs(cel.currentTime - want) > 0.3) cel.currentTime = want;
+    } else {
+      if (!cel.paused) cel.pause();
+      if (Math.abs(cel.currentTime - want) > 0.04) cel.currentTime = want;
+    }
+  }
+}
+
 function frame(now) {
-  if (video.readyState >= 2) {
+  // The exporter owns the canvas and every video's position while it renders.
+  if (video.readyState >= 2 && !exporting) {
     if (!video.paused) {
       const to = skipCut(video.currentTime, cuts);
       if (to !== video.currentTime) video.currentTime = Math.min(to, video.duration);
     }
     const t = video.currentTime;
+    syncClips(t, !video.paused);
     const li = drawFrame(t);
     $('playhead').style.left = `${t * PX}px`;
     $('time').textContent = `${fmt(t)} / ${fmt(video.duration)}`;
@@ -495,10 +633,149 @@ document.addEventListener('keydown', e => {
   $('play').click();
 });
 
-// --- export ---
-$('srt').onclick = () => download(new Blob([toSrt(lines)], { type: 'text/plain' }), baseName() + '.srt');
 
-$('export').onclick = async () => {
+// --- export ---
+$('srt').onclick = () => download(new Blob([toSrt(lines, cuts)], { type: 'text/plain' }), baseName() + '.srt');
+$('export').onclick = () => ('VideoEncoder' in window ? exportOffline(false) : exportRealtime());
+$('exportGreen').onclick = () => exportOffline(true);
+
+const EXPORT_LOCKED = ['export', 'exportGreen', 'play', 'transcribe', 'srt', 'addClip'];
+const lockButtons = on => EXPORT_LOCKED.forEach(id => ($(id).disabled = on));
+
+// Resolves once el shows the frame at t. Seeking to where it already is fires no event, so skip that case.
+function seekTo(el, t) {
+  return new Promise(res => {
+    if (Math.abs(el.currentTime - t) < 1e-4 && el.readyState >= 2) return res();
+    el.addEventListener('seeked', res, { once: true });
+    el.currentTime = t;
+  });
+}
+
+// RNNoise, a small neural network trained to keep speech and drop fans, traffic and hum. It runs on 480-sample
+// frames of 48 kHz mono in 16-bit range, so mix to mono (a phone mic is mono anyway) and scale around it.
+async function denoise(channels) {
+  const { Rnnoise } = await import(RNNOISE);
+  const rn = await Rnnoise.load();
+  const N = rn.frameSize;
+  const mono = channels.length === 1 ? channels[0] : channels[0].map((v, i) => (v + channels[1][i]) / 2);
+  const out = new Float32Array(mono.length);
+  const st = rn.createDenoiseState();
+  const f = new Float32Array(N);
+  for (let i = 0; i + N <= mono.length; i += N) {
+    for (let j = 0; j < N; j++) f[j] = mono[i + j] * 32768;
+    st.processFrame(f);
+    for (let j = 0; j < N; j++) out[i + j] = f[j] / 32768;
+  }
+  st.destroy();
+  return [out];
+}
+
+// The export's soundtrack: decoded at 48 kHz, cleaned, cut like the video, levelled, as two channels.
+async function renderAudio() {
+  const ac = new AudioContext({ sampleRate: RATE });
+  let buf;
+  try {
+    buf = await ac.decodeAudioData(await file.arrayBuffer());
+  } finally {
+    ac.close();
+  }
+  let ch = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, i) => buf.getChannelData(i).slice());
+  if ($('denoise').checked) {
+    status('Reducing background noise…');
+    ch = await denoise(ch).catch(e => {
+      console.warn('Noise reduction unavailable, exporting the original sound:', e.message);
+      return ch;
+    });
+  }
+  ch = cutAudio(ch, cuts, RATE);
+  if ($('level').checked) levelAudio(ch, RATE);
+  return ch.length === 1 ? [ch[0], ch[0]] : ch;
+}
+
+async function pickAudioCodec() {
+  for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+    const config = { codec, sampleRate: RATE, numberOfChannels: 2, bitrate: 160000 };
+    if ((await AudioEncoder.isConfigSupported(config).catch(() => ({}))).supported) return { config, mux };
+  }
+  return null;
+}
+
+// Renders frame by frame with WebCodecs instead of recording in real time: every frame is drawn after the video
+// (and any second clip) has actually reached it, so nothing drops or drifts on a slow machine, and the tab can be
+// in the background. Cuts are applied by mapping each output frame back to its source time.
+// captionsOnly: just the captions on green, no sound, to layer over another edit.
+async function exportOffline(captionsOnly) {
+  if (exporting) return;
+  exporting = true;
+  lockButtons(true);
+  green = captionsOnly;
+  video.pause();
+  const resume = video.currentTime;
+  try {
+    const { Muxer, ArrayBufferTarget } = await import(MUXER);
+    const W = canvas.width, H = canvas.height;
+    const audio = captionsOnly ? null : await renderAudio();
+    const acodec = audio && (await pickAudioCodec());
+    if (audio && !acodec) throw new Error("this browser can't encode audio");
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: { codec: 'avc', width: W, height: H },
+      ...(acodec && { audio: { codec: acodec.mux, numberOfChannels: 2, sampleRate: RATE } }),
+      fastStart: 'in-memory',
+    });
+    let failed;
+    if (audio) {
+      status('Encoding the sound…');
+      const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: e => (failed = e) });
+      aenc.configure(acodec.config);
+      const len = audio[0].length;
+      for (let i = 0; i < len; i += 1024) {
+        const n = Math.min(1024, len - i);
+        const data = new Float32Array(n * 2);
+        data.set(audio[0].subarray(i, i + n), 0);
+        data.set(audio[1].subarray(i, i + n), n);
+        const ad = new AudioData({ format: 'f32-planar', sampleRate: RATE, numberOfFrames: n, numberOfChannels: 2, timestamp: Math.round((i / RATE) * 1e6), data });
+        aenc.encode(ad);
+        ad.close();
+      }
+      await aenc.flush();
+    }
+    const venc = new VideoEncoder({ output: (c, m) => muxer.addVideoChunk(c, m), error: e => (failed = e) });
+    venc.configure({ codec: 'avc1.640032', width: W, height: H, bitrate: 8e6, framerate: FPS });
+    const n = Math.floor(toOutput(video.duration, cuts) * FPS);
+    const label = captionsOnly ? 'Rendering captions on green' : 'Rendering video';
+    for (let i = 0; i < n && !failed; i++) {
+      const t = Math.min(toSource(i / FPS, cuts) + 1e-3, video.duration - 1e-3);
+      if (!captionsOnly) {
+        await seekTo(video, t);
+        await Promise.all(brolls.filter(b => b.clip && t >= b.start && t < b.end).map(b => seekTo(b.clip.el, clipTime(b, t))));
+      }
+      drawFrame(t);
+      const f = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
+      venc.encode(f, { keyFrame: i % 60 === 0 });
+      f.close();
+      if (venc.encodeQueueSize > 20) await new Promise(r => venc.addEventListener('dequeue', r, { once: true }));
+      if (i % 10 === 0) status(`${label}… ${Math.round((i / n) * 100)}%`);
+    }
+    if (failed) throw failed;
+    await venc.flush();
+    muxer.finalize();
+    download(new Blob([target.buffer], { type: 'video/mp4' }), `${baseName()}-${captionsOnly ? 'captions-green' : 'murmurcut'}.mp4`);
+    status('Export finished. Check your downloads.');
+  } catch (e) {
+    status(`Export failed: ${e.message}`);
+  } finally {
+    green = false;
+    exporting = false;
+    lockButtons(false);
+    seek(resume);
+  }
+}
+
+// Fallback for browsers without WebCodecs: record the canvas while the video plays. It needs the tab visible,
+// and a slow machine can drop frames, which is why the offline export is preferred.
+async function exportRealtime() {
   if (exporting) return;
   if (!audioDest) {
     // An element can only be routed into Web Audio once, so this graph lives for the page.
@@ -513,14 +790,14 @@ $('export').onclick = async () => {
   const stream = new MediaStream([...canvas.captureStream(30).getVideoTracks(), ...audioDest.stream.getAudioTracks()]);
   const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8e6 });
   const chunks = [];
-  const lock = on => { exporting = on; for (const id of ['export', 'play', 'transcribe', 'srt']) $(id).disabled = on; };
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
   rec.onstop = () => {
-    lock(false);
+    lockButtons(false);
     download(new Blob(chunks, { type }), `${baseName()}-murmurcut.${type.includes('mp4') ? 'mp4' : 'webm'}`);
     status('Export finished. Check your downloads.');
   };
-  lock(true);
+  // The live recorder needs the preview loop drawing, so it locks the buttons but leaves `exporting` off.
+  lockButtons(true);
   video.pause();
   seek(skipCut(0, cuts));
   await new Promise(r => video.addEventListener('seeked', r, { once: true }));
@@ -528,4 +805,4 @@ $('export').onclick = async () => {
   rec.start(1000);
   status('Exporting in real time. Keep this tab open and visible.');
   await video.play();
-};
+}
