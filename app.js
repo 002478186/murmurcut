@@ -20,6 +20,7 @@ let heard = []; // Whisper's words as heard, kept so "Use my script" can be re-a
 let green = false, file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest;
 
 const status = text => ($('status').textContent = text);
+const busy = on => { try { on ? sessionStorage.setItem('busy', '1') : sessionStorage.removeItem('busy'); } catch {} };
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const words = () => lines.flatMap(l => l.words);
 const settings = () => ({ size: +$('size').value, pos: +$('pos').value, upper: $('upper').checked });
@@ -117,10 +118,12 @@ function syncLang() {
 }
 $('lang').onchange = $('capLang').onchange = syncLang;
 syncLang();
+try { if (sessionStorage.getItem('busy')) { busy(false); status('Your phone ran out of memory making captions, so the page restarted. Try a shorter clip, or film in 1080p instead of 4K.'); } } catch {}
 
 // --- transcribe ---
 $('transcribe').onclick = async () => {
   $('transcribe').disabled = true;
+  busy(true);
   status('Reading the audio…');
   const ac = new AudioContext({ sampleRate: 16000 }); // Whisper expects 16 kHz mono
   let buf;
@@ -128,6 +131,7 @@ $('transcribe').onclick = async () => {
     buf = await ac.decodeAudioData(await file.arrayBuffer());
   } catch {
     $('transcribe').disabled = false;
+    busy(false);
     return status("Couldn't read the audio track of this video.");
   } finally {
     ac.close();
@@ -162,6 +166,7 @@ worker.onmessage = ({ data }) => {
   if (data.type === 'status') { $('progress').removeAttribute('value'); return status(data.text); }
   $('progress').hidden = true;
   $('transcribe').disabled = false;
+  busy(false);
   if (data.type === 'error') return status(`Transcription failed: ${data.message}`);
   const ws = toWords(data.chunks);
   heard = ws.map(w => ({ ...w }));

@@ -6,8 +6,10 @@ const opts = { chunk_length_s: 30, stride_length_s: 5 };
 const progress_callback = p => p.status === 'progress' && self.postMessage({ type: 'progress', file: p.file, progress: p.progress });
 
 // WebGPU is roughly 10x faster than the CPU path; fall back when the browser or GPU lacks it.
+// shortcut: iPhones always take the CPU path, since Safari kills a tab that runs out of memory and WebGPU adds to it; revisit when tested on a real iPhone.
+const gpu = () => (/iPhone|iPod/.test(navigator.userAgent) ? null : navigator.gpu?.requestAdapter().catch(() => null));
 async function load(model) {
-  const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
+  const adapter = await gpu();
   if (adapter) {
     try {
       const encoder_model = adapter.features.has('shader-f16') ? 'fp16' : 'fp32';
@@ -46,7 +48,7 @@ async function free(keep) {
   for (const k of Object.keys(dubbers)) if (k !== keep) { await dubbers[k].tr?.dispose?.(); await dubbers[k].tts.dispose?.(); delete dubbers[k]; }
 }
 async function loadLLM() {
-  const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
+  const adapter = await gpu();
   if (adapter) {
     try {
       return await pipeline('text-generation', LLM, { device: 'webgpu', dtype: adapter.features.has('shader-f16') ? 'q4f16' : 'q4', progress_callback });
