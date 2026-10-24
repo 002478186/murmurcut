@@ -4,6 +4,10 @@ import { resample, envelope, placeDub, bedMusic, toWav } from './audio.js';
 assert.equal(resample(new Float32Array(160), 16000, 48000).length, 480);
 const env = envelope(Float32Array.from({ length: 1600 }, (_, i) => (i < 800 ? 0 : 0.5)), 16000, 20);
 assert.deepEqual([env[0], env[1]], [0, 1]);
+// One loud spike doesn't squash normal speech towards a closed mouth.
+const spiky = envelope(Float32Array.from({ length: 32000 }, (_, i) => (i < 100 ? 1 : 0.1)), 16000, 20);
+assert.equal(spiky[0], 1);
+assert.ok(spiky[10] > 0.9);
 
 // A 1 s line in a 0.8 s slot is sped up (1.25x) and still ends before the next line.
 const rate = 100, line = n => ({ pcm: new Float32Array(n).fill(1) });

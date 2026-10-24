@@ -44,14 +44,14 @@ export function resample(pcm, from, to) {
 // Loudness per video frame, 0..1, to drive a talking avatar.
 export function envelope(pcm, rate, fps = 30) {
   const win = Math.round(rate / fps), out = new Float32Array(Math.ceil(pcm.length / win));
-  let max = 1e-6;
   for (let k = 0; k < out.length; k++) {
     let s = 0;
     for (let i = k * win; i < Math.min(pcm.length, (k + 1) * win); i++) s += pcm[i] * pcm[i];
     out[k] = Math.sqrt(s / win);
-    max = Math.max(max, out[k]);
   }
-  return out.map(v => v / max);
+  // Scale by the 95th percentile, not the loudest frame: one shout or clap would otherwise keep normal speech near 0.
+  const ref = Math.max(1e-6, [...out].sort((a, b) => a - b)[Math.floor(out.length * 0.95)] ?? 0);
+  return out.map(v => Math.min(1, v / ref));
 }
 
 // Lay each dubbed line at its start. A line too long for its slot (up to the next line) is sped up to maxSpeed,
