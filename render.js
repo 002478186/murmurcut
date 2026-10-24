@@ -161,16 +161,12 @@ export function drawAvatar(ctx, W, H, src, sw, sh, amp, t, mode) {
     ctx.scale(k, k);
     drawCover(ctx, src, sw, sh, -d / 2, -d / 2, d, d, 1.05, 0.25);
   } else {
-    // Characters are often cut-outs, so stand them on a plain backdrop rather than a blurred copy of themselves.
-    const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#191a1b');
-    bg.addColorStop(1, '#010102');
-    ctx.fillStyle = bg;
+    // Fill the frame like a video (avatar packs are usually full 9:16 scenes); a cut-out lands on the dark backdrop.
+    ctx.fillStyle = '#010102';
     ctx.fillRect(0, 0, W, H);
-    const s = Math.min(W / sw, H / sh) * 0.94 * k;
-    ctx.translate(W / 2, H * 0.98 - H * 0.03 * amp);
+    ctx.translate(W / 2, H / 2 - H * 0.015 * amp);
     ctx.rotate(tilt);
-    ctx.drawImage(src, (-sw * s) / 2, -sh * s, sw * s, sh * s);
+    drawCover(ctx, src, sw, sh, -W / 2, -H / 2, W, H, 1.04 * k, 0.35);
   }
   ctx.restore();
 }
