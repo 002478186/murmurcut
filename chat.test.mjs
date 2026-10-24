@@ -40,4 +40,8 @@ const many = parseCommand('remove the ums, zoom in at 0:12 and make it square', 
 assert.deepEqual(many.actions.map(a => a.type), ['fillers', 'zoom', 'ratio']);
 assert.deepEqual(parseCommand('make me a sandwich', ctx).unknown, ['make me a sandwich']);
 
+assert.deepEqual(parseCommand('turn off noise and loudness', ctx).actions, [{ type: 'denoise', on: false }, { type: 'level', on: false }]);
+assert.deepEqual(parseCommand('keep the pauses and fillers', ctx).actions.map(a => a.on), [false, false]);
+assert.deepEqual(parseCommand('remove the ums and keep the pauses', ctx).actions.map(a => a.on), [true, false]);
+
 console.log('chat ok');

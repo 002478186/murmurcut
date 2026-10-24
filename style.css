@@ -128,6 +128,11 @@ details.group[open] summary { color: var(--ink); }
 .actions .btn { min-height: 30px; padding: 4px 10px; font-size: 13px; }
 .credits textarea { font-size: 12px; }
 
+.search { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+#musicList > li { grid-template-columns: 1fr; }
+#musicList audio { width: 100%; height: 32px; }
+.preset img, .preset video { width: 100%; height: 100%; object-fit: cover; display: block; }
+
 /* style gallery: each preset previews itself on a dark frame */
 .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .preset { position: relative; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-lg); background: var(--canvas); overflow: hidden; cursor: pointer; aspect-ratio: 3 / 4; }

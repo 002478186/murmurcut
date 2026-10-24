@@ -64,7 +64,7 @@ export function alignScript(script, words) {
   });
 }
 
-const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Replace a misheard word or phrase in every caption line ("Capsule" -> "Kapso"). Whole words only, any case.
 // Returns how many were replaced.
@@ -81,9 +81,13 @@ export function replaceText(lines, find, repl) {
 }
 
 // Ranges of the timeline to skip: words marked cut, fillers, long silences. Sorted and merged.
-export function cutRanges(words, { fillers = false, silence = 0 } = {}) {
+export function cutRanges(words, { fillers = false, silence = 0, duration = 0 } = {}) {
   const pad = 0.15;
   const r = [];
+  if (silence > 0 && words.length) {
+    if (words[0].start > silence) r.push([0, words[0].start - pad]);
+    if (duration - words.at(-1).end > silence) r.push([words.at(-1).end + pad, duration]);
+  }
   words.forEach((w, i) => {
     if (w.cut || (fillers && FILLERS.test(w.text.replace(/[^\p{L}]/gu, '')))) r.push([w.start, w.end]);
     const next = words[i + 1];
@@ -233,7 +237,7 @@ export const toSegments = words =>
 export function emphasisIndex(words) {
   const k = pickKeyword(words.map(w => w.text).join(' '))?.split(' ')[0];
   const clean = t => t.replace(/[^\p{L}\p{N}]/gu, '');
-  const i = k ? words.findIndex(w => clean(w.text) === k) : -1;
+  const i = k ? words.findIndex(w => clean(w.text) === clean(k)) : -1;
   if (i >= 0) return i;
   return words.reduce((b, w, j) => (clean(w.text).length > clean(words[b].text).length ? j : b), 0);
 }

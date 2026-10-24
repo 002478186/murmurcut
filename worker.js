@@ -38,6 +38,12 @@ async function rank({ id, queries, texts }) {
 // A small language model that reads a sentence and writes the photo search a person would type.
 const LLM = 'onnx-community/Qwen2.5-0.5B-Instruct';
 let llm;
+// Big models don't fit together on a modest laptop: keep only the one about to run.
+async function free(keep) {
+  for (const k of Object.keys(asrs)) { await asrs[k].asr.dispose?.(); delete asrs[k]; }
+  if (keep !== 'llm' && llm) { await (await llm).dispose?.(); llm = null; }
+  for (const k of Object.keys(dubbers)) if (k !== keep) { await dubbers[k].tr?.dispose?.(); await dubbers[k].tts.dispose?.(); delete dubbers[k]; }
+}
 async function loadLLM() {
   const adapter = await navigator.gpu?.requestAdapter().catch(() => null);
   if (adapter) {
@@ -59,7 +65,7 @@ const SHOTS = [
 async function suggest({ id, domain, sentences }) {
   try {
     // Whisper is done by now; free it so both models never sit in memory together.
-    for (const k of Object.keys(asrs)) { await asrs[k].asr.dispose?.(); delete asrs[k]; }
+    await free('llm');
     llm ??= await loadLLM();
     const queries = [];
     for (const s of sentences) {
@@ -77,12 +83,38 @@ async function suggest({ id, domain, sentences }) {
   }
 }
 
+// Dubbing: translate each English sentence (opus-mt), then speak it with Meta's MMS voice for that language.
+const dubbers = {};
+const DUB_MT = { hin: 'hi', spa: 'es', fra: 'fr', deu: 'de', ara: 'ar' }; // eng is spoken as-is
+async function dub({ id, lang, texts }) {
+  try {
+    await free(lang);
+    dubbers[lang] ??= {
+      tr: DUB_MT[lang] && (await pipeline('translation', `Xenova/opus-mt-en-${DUB_MT[lang]}`, { progress_callback })),
+      tts: await pipeline('text-to-speech', `Xenova/mms-tts-${lang}`, { progress_callback }),
+    };
+    const { tr, tts } = dubbers[lang];
+    const audios = [];
+    let rate = 16000;
+    for (const [i, t] of texts.entries()) {
+      const out = await tts(tr ? (await tr(t))[0].translation_text : t);
+      audios.push(out.audio);
+      rate = out.sampling_rate;
+      self.postMessage({ type: 'progress', progress: ((i + 1) / texts.length) * 100 });
+    }
+    self.postMessage({ type: 'dubbed', id, audios, rate });
+  } catch (e) {
+    self.postMessage({ type: 'dubbed', id, error: e.message });
+  }
+}
+
 // data: { audio, language, model, translate } to transcribe; { type: 'rank' } to score photo descriptions;
 // { type: 'suggest' } to write photo searches. Transcription replies with word chunks for captions, plus English
 // sentence segments to pick b-roll from when the captions are not English.
 self.onmessage = async ({ data }) => {
   if (data.type === 'rank') return rank(data);
   if (data.type === 'suggest') return suggest(data);
+  if (data.type === 'dub') return dub(data);
   const { audio, language, model, translate } = data;
   try {
     asrs[model] ??= await load(model);

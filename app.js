@@ -1,6 +1,7 @@
-import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, toOutput, toSource, splitClip, clipTime } from './captions.js';
-import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker } from './render.js';
-import { cutAudio, levelAudio } from './audio.js';
+import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, escapeRe, toOutput, toSource, splitClip, clipTime } from './captions.js';
+import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker, drawAvatar } from './render.js';
+import { cutAudio, levelAudio, resample, envelope, placeDub, bedMusic, toWav } from './audio.js';
+import { sniffKind, groupAvatars } from './avatars.js';
 import { parseCommand, CHAT_EXAMPLES } from './chat.js';
 
 const $ = id => document.getElementById(id);
@@ -16,7 +17,7 @@ const FPS = 30, RATE = 48000;
 
 let zooms = []; // manual zooms: { start, end, amount }
 let heard = []; // Whisper's words as heard, kept so "Use my script" can be re-applied after edits
-let green = false, file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest, nextId = 1;
+let green = false, file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest;
 
 const status = text => ($('status').textContent = text);
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -36,7 +37,7 @@ function download(blob, name) {
 }
 const baseName = () => file.name.replace(/\.[^.]+$/, '');
 // Everything that needs captions first.
-const enableEditing = on => ['export', 'exportGreen', 'srt', 'addBroll', 'researchAll', 'replaceBtn', 'applyScript'].forEach(id => ($(id).disabled = !on));
+const enableEditing = on => ['export', 'exportGreen', 'srt', 'addBroll', 'researchAll', 'replaceBtn', 'applyScript', 'makeDub'].forEach(id => ($(id).disabled = !on));
 
 // --- tabs ---
 const tabs = [...document.querySelectorAll('[role="tab"]')];
@@ -61,6 +62,7 @@ $('t-captions').closest('[role="tablist"]').addEventListener('keydown', e => {
 
 // --- import ---
 function load(f) {
+  if (exporting) return status('Wait for the export to finish first.');
   if (!f?.type.startsWith('video/')) return status('That file is not a video. Choose an MP4, MOV or WebM file.');
   file = f;
   lines = [];
@@ -70,6 +72,9 @@ function load(f) {
   enableEditing(false);
   heard = [];
   zooms = [];
+  dubTrack = avatarEnv = null;
+  setTrack('dub', null);
+  $('dubLang').value = '';
   undoStack.length = 0;
   lastState = null;
   $('undo').disabled = true;
@@ -143,8 +148,14 @@ const askWorker = msg => new Promise((resolve, reject) => {
 });
 const rankTexts = (queries, texts) => askWorker({ type: 'rank', queries, texts }).then(d => d.scores);
 
+worker.onerror = e => {
+  const error = e.message || 'The AI worker stopped. Reload the page and try again.';
+  pending.forEach(reply => reply({ error }));
+  pending.clear();
+  worker.onmessage({ data: { type: 'error', message: error } });
+};
 worker.onmessage = ({ data }) => {
-  if (data.type === 'ranked' || data.type === 'suggested') { pending.get(data.id)?.(data); pending.delete(data.id); return; }
+  if (data.type === 'ranked' || data.type === 'suggested' || data.type === 'dubbed') { pending.get(data.id)?.(data); pending.delete(data.id); return; }
   if (data.type === 'progress') { $('progress').value = data.progress / 100; return; }
   if (data.type === 'status') { $('progress').removeAttribute('value'); return status(data.text); }
   $('progress').hidden = true;
@@ -154,7 +165,7 @@ worker.onmessage = ({ data }) => {
   heard = ws.map(w => ({ ...w }));
   lines = groupWords(ws);
   topic = topicOf(ws);
-  brolls = planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, planned: b.mode, id: nextId++, options: [], pick: 0 }));
+  brolls = [...brolls.filter(b => b.clip), ...planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, planned: b.mode, options: [], pick: 0 }))].sort((x, y) => x.start - y.start);
   topicInfo = genericPool = null;
   updateCuts();
   renderAll();
@@ -220,7 +231,7 @@ async function addClip(f) {
     el.onerror = () => rej(new Error(`This browser can't play ${f.name}. Try an MP4 (H.264) or WebM.`));
   });
   const start = Math.min(video.currentTime, Math.max(0, video.duration - 1));
-  const b = { id: nextId++, start, end: video.duration, mode: 'full', clip: { el, from: 0, to: el.duration, name: f.name }, query: '', label: f.name, options: [], pick: 0 };
+  const b = { start, end: Math.min(video.duration, start + el.duration), mode: 'full', clip: { el, from: 0, to: el.duration, name: f.name }, query: '', label: f.name, options: [], pick: 0 };
   brolls = [...brolls, b].sort((x, y) => x.start - y.start);
   if ($('layout').value === 'full') { $('layout').value = 'split'; onLayout(); }
   renderBrolls();
@@ -283,7 +294,7 @@ const wikiPhotos = async q => toPhotos(await wikiPages(q));
 
 // Openverse covers everyday things with Creative Commons photos.
 async function openversePhotos(q) {
-  const d = await getJson(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(q)}&page_size=10&license_type=commercial&mature=false`);
+  const d = await getJson(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(q)}&page_size=10&license_type=commercial,modification&mature=false`);
   return d.results.map(o => ({
     src: o.thumbnail,
     about: `${o.title ?? ''} ${(o.tags ?? []).slice(0, 8).map(t => t.name).join(' ')}`,
@@ -301,7 +312,6 @@ async function loadTopic() {
   if (topicInfo.domain) genericPool = openversePhotos(topicInfo.domain).then(r => r.map(o => ({ ...o, generic: true })), () => []);
 }
 
-const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const MIN_FIT = 0.3; // below this nothing found fits what was said, so a text card beats a wrong photo
 
 // Optional libraries, unlocked by the user's own free keys.
@@ -324,8 +334,9 @@ async function unsplashPhotos(q, key) {
 }
 
 async function search(b) {
+  const run = (b.run = (b.run ?? 0) + 1); // a newer search for this row wins
   b.note = 'Searching…';
-  renderBrolls();
+  renderRow(b);
   await loadTopic();
   const q = b.query;
   // The AI search describes the scene ("skyline mumbai"); the keyword names the thing ("Mumbai"). Both feed the same ranking.
@@ -341,6 +352,7 @@ async function search(b) {
     k.unsplash && unsplashPhotos(ai || q, k.unsplash),
     genericPool,
   ].filter(Boolean));
+  if (b.run !== run) return;
   const seen = new Set();
   let pool = results.flatMap(r => (r.status === 'fulfilled' ? r.value : [])).filter(o => o.src && !seen.has(o.src) && seen.add(o.src));
   const context = b.context || q;
@@ -357,11 +369,13 @@ async function search(b) {
   }
   const top = (await exact.catch(() => []))[0];
   const abstract = top && top.title.toLowerCase().includes(q.toLowerCase()) && isAbstract(top.description);
+  if (b.run !== run) return;
   b.options = pool;
   b.pick = 0;
   const fits = pool.length && (pool[0].fit ?? 1) >= MIN_FIT;
   if (pool.length) await usePick(b);
   else b.img = null;
+  if (b.run !== run) return;
   if (fits && b.img && !abstract) {
     if (b.mode === 'text') b.mode = b.planned ?? 'full';
   } else {
@@ -372,7 +386,7 @@ async function search(b) {
       : pool.length ? 'No photo fitted what you said, so this shows as a text card. Pick a photo layout to use the closest one anyway.'
       : `No free photos for "${q}", so this shows as a text card. Try another word, or upload your own.`;
   }
-  renderBrolls();
+  renderRow(b);
   renderTimeline();
 }
 
@@ -417,7 +431,6 @@ function clipRow(b) {
   split.onclick = () => {
     const parts = splitClip(b, video.currentTime);
     if (parts.length < 2) return status('Move the playhead inside this clip, at least 0.1 s from either end, then split.');
-    parts[1].id = nextId++;
     brolls.splice(brolls.indexOf(b), 1, ...parts);
     renderBrolls();
     renderTimeline();
@@ -441,8 +454,7 @@ function clipRow(b) {
       el('div', { className: 'actions' }, split, del)));
 }
 
-function renderBrolls() {
-  brollEls = brolls.map(b => {
+function brollRow(b) {
     if (b.clip) return clipRow(b);
     const thumb = el('img', { className: 'thumb', alt: b.img && b.mode !== 'text' ? `Photo for ${b.query}` : '' });
     if (b.img && b.mode !== 'text') thumb.src = b.img.src;
@@ -460,7 +472,10 @@ function renderBrolls() {
       b.img = await loadImg(URL.createObjectURL(up.files[0]));
       b.credit = '';
       b.note = 'Using your photo.';
+      if (b.mode === 'text') b.mode = b.planned ?? 'full';
       renderBrolls();
+      renderTimeline();
+      commit();
     };
     const upBtn = el('button', { type: 'button', className: 'btn ghost', textContent: 'Upload', onclick: () => up.click() });
     const del = el('button', { type: 'button', className: 'btn ghost', textContent: 'Remove' });
@@ -473,22 +488,38 @@ function renderBrolls() {
       ...(b.note ? [el('p', { className: 'hint', textContent: b.note })] : []),
       el('div', { className: 'actions' }, swap, upBtn, del, up));
     return el('li', {}, thumb, body);
-  });
+}
+const creditsText = () => [...brolls.filter(b => b.mode !== 'text').map(b => b.credit), music?.credit].filter(Boolean).join('\n');
+function renderBrolls() {
+  brollEls = brolls.map(brollRow);
   $('brolls').replaceChildren(...brollEls);
   if (!brolls.length && lines.length) $('brolls').append(el('li', { className: 'hint', textContent: 'No b-roll yet. Move the playhead and add one.' }));
-  $('credits').value = brolls.filter(b => b.mode !== 'text').map(b => b.credit).filter(Boolean).join('\n');
+  $('credits').value = creditsText();
+}
+// Background searches redraw only their own row, so a search being typed in another row survives.
+function renderRow(b) {
+  const i = brolls.indexOf(b);
+  if (i < 0 || !brollEls[i]?.isConnected) return renderBrolls();
+  brollEls[i].replaceWith((brollEls[i] = brollRow(b)));
+  $('credits').value = creditsText();
 }
 
-$('addBroll').onclick = () => {
-  const t = video.currentTime;
+// A photo moment at `at`, searched for `query` or, without one, the keyword of what is being said there.
+function addPhoto(at, dur = 2.5, query = '') {
+  const t = Math.min(at, Math.max(0, video.duration - 0.5));
   const line = lines.find(l => t >= l.start && t < l.end) ?? lines.find(l => l.start >= t);
-  const b = { id: nextId++, start: t, end: Math.min(t + 2.5, video.duration), query: line ? pickKeyword(line.words.map(w => w.text).join(' ')) ?? '' : '', context: line?.words.map(w => w.text).join(' '), mode: 'full', planned: 'full', options: [], pick: 0 };
-  b.label = b.query;
+  const context = line?.words.map(w => w.text).join(' ');
+  query ||= (context && pickKeyword(context)) || '';
+  const b = { start: t, end: Math.min(t + dur, video.duration), query, label: query, context, mode: 'full', planned: 'full', options: [], pick: 0 };
   brolls = [...brolls, b].sort((x, y) => x.start - y.start);
+  if (query) search(b);
+  return b;
+}
+$('addBroll').onclick = () => {
+  addPhoto(video.currentTime);
   renderBrolls();
   renderTimeline();
   commit();
-  if (b.query) search(b);
 };
 
 $('researchAll').onclick = () => searchAll();
@@ -534,7 +565,7 @@ function renderAll() {
 
 // --- smart cuts ---
 function updateCuts() {
-  cuts = cutRanges(words(), { fillers: $('fillers').checked, silence: $('silences').checked ? +$('silence').value : 0 });
+  cuts = cutRanges(words(), { fillers: $('fillers').checked, silence: $('silences').checked ? +$('silence').value : 0, duration: video.duration });
 }
 $('fillers').onchange = $('silences').onchange = () => { updateCuts(); renderTimeline(); };
 $('silence').oninput = () => { $('silOut').textContent = $('silence').value; updateCuts(); renderTimeline(); };
@@ -634,7 +665,7 @@ function setPreset(key) {
 
 // --- undo ---
 // Every edit records the state before it. Photos and clips are kept by reference, so undo is cheap.
-const CONTROLS = ['size', 'pos', 'upper', 'zoom', 'fillers', 'silences', 'silence', 'layout', 'anchor', 'denoise', 'level'];
+const CONTROLS = ['size', 'pos', 'upper', 'zoom', 'fillers', 'silences', 'silence', 'layout', 'anchor', 'denoise', 'level', 'avatarMode', 'musicVol', 'dubKeep'];
 const undoStack = [];
 let lastState = null;
 function snapshot() {
@@ -652,6 +683,7 @@ function commit() {
   $('undo').disabled = !undoStack.length;
 }
 function undo() {
+  if (exporting) return;
   const s = undoStack.pop();
   if (!s) return status('Nothing to undo.');
   ({ lines, brolls, zooms } = s);
@@ -693,14 +725,8 @@ function runAction(a) {
     case 'clearZooms': zooms = []; return 'Removed every zoom.';
     case 'autoZoom': $('zoom').checked = a.on; return a.on ? 'Punch-ins on every third line are on.' : 'Automatic punch-ins are off.';
     case 'broll': {
-      const t = Math.min(a.at, Math.max(0, video.duration - 0.5));
-      const line = lines.find(l => t >= l.start && t < l.end) ?? lines.find(l => l.start >= t);
-      const query = a.query || (line ? pickKeyword(line.words.map(w => w.text).join(' ')) ?? '' : '');
-      if (!query) return 'Say what the photo should show, for example "add a photo of a ps5 here".';
-      const b = { id: nextId++, start: t, end: Math.min(t + a.dur, video.duration), query, label: query, context: line?.words.map(w => w.text).join(' '), mode: 'full', planned: 'full', options: [], pick: 0 };
-      brolls = [...brolls, b].sort((x, y) => x.start - y.start);
-      search(b);
-      return `Looking for a photo of "${query}" at ${fmt(t)}.`;
+      const b = addPhoto(a.at, a.dur, a.query);
+      return b.query ? `Looking for a photo of "${b.query}" at ${fmt(b.start)}.` : 'Added a b-roll moment. Type what the photo should show in B-roll.';
     }
     case 'clearBroll': brolls = brolls.filter(b => b.clip); return 'Removed the photo b-roll.';
     case 'ratio': setRadio('ratio', a.value); sizeCanvas(); return a.value === 'original' ? 'Back to the original shape.' : `The video is now ${a.value}.`;
@@ -730,6 +756,148 @@ $('chat').onsubmit = e => {
 const chatHints = CHAT_EXAMPLES.slice(0, 5).map(x => el('button', { type: 'button', textContent: x, disabled: true, onclick: () => applyChat(x) }));
 $('chatHints').append(...chatHints);
 
+// --- extra soundtracks: music and the dub ---
+// Each plays in an <audio> element that follows the video's play, pause and seek while previewing.
+// The export mixes them properly in renderAudio.
+let music = null; // { data: ArrayBuffer, title, credit }
+let dubTrack = null; // { pcm, rate } on the source timeline
+const tracks = { music: new Audio(), dub: new Audio() };
+tracks.music.loop = true;
+function follow() {
+  for (const [kind, a] of Object.entries(tracks)) {
+    if (!a.getAttribute('src')) continue;
+    a.volume = kind === 'music' ? Math.min(1, +$('musicVol').value) : 1;
+    const t = video.currentTime;
+    a.currentTime = kind === 'music' && isFinite(a.duration) ? t % a.duration : t;
+    video.paused || exporting ? a.pause() : a.play().catch(() => {});
+  }
+  video.volume = dubTrack ? ($('dubKeep').checked ? 0.15 : 0) : 1;
+}
+['play', 'pause', 'seeked'].forEach(ev => video.addEventListener(ev, follow));
+$('musicVol').oninput = $('dubKeep').onchange = follow;
+function setTrack(kind, src) {
+  const a = tracks[kind];
+  a.pause();
+  if (a.src.startsWith('blob:')) URL.revokeObjectURL(a.src);
+  src ? (a.src = src) : a.removeAttribute('src');
+  follow();
+}
+
+// --- music ---
+async function useMusic(m, src) {
+  music = m;
+  setTrack('music', src);
+  $('musicNow').replaceChildren(`Now: ${m.title}. `, el('button', { type: 'button', className: 'btn tertiary', textContent: 'Remove', onclick: () => { music = null; setTrack('music', null); $('musicNow').textContent = 'No music.'; renderBrolls(); } }));
+  renderBrolls();
+}
+$('musicSearch').onsubmit = async e => {
+  e.preventDefault();
+  const q = $('musicQuery').value.trim();
+  if (!q) return;
+  $('musicList').replaceChildren(el('li', { className: 'hint', textContent: 'Searching…' }));
+  try {
+    // commercial + modification: no NC (sponsored videos) and no ND (music under a video is an adaptation)
+    const d = await getJson(`https://api.openverse.org/v1/audio/?q=${encodeURIComponent(q)}&category=music&license_type=commercial,modification&page_size=8`);
+    $('musicList').replaceChildren(...d.results.map(r => {
+      const credit = `"${r.title}" by ${r.creator || 'unknown'}, ${r.license.toUpperCase()} ${r.license_version ?? ''}, via Openverse: ${r.foreign_landing_url}`;
+      const use = el('button', { type: 'button', className: 'btn secondary', textContent: 'Use' });
+      use.onclick = async () => {
+        use.disabled = true;
+        try {
+          const res = await fetch(r.url); // also proves the host allows the export to read it
+          if (!res.ok) throw new Error(res.status);
+          await useMusic({ data: await res.arrayBuffer(), title: r.title, credit }, r.url);
+        } catch {
+          status(`"${r.title}" can't be downloaded from its site. Pick another track.`);
+        }
+        use.disabled = false;
+      };
+      const mins = r.duration ? ` · ${fmt(r.duration / 1000)}` : '';
+      return el('li', {}, el('div', { className: 'stack' },
+        el('div', { className: 'meta' }, el('span', { textContent: `${r.title} — ${r.creator || 'unknown'}${mins}` }), use),
+        el('audio', { controls: true, preload: 'none', src: r.url })));
+    }));
+    if (!d.results.length) $('musicList').replaceChildren(el('li', { className: 'hint', textContent: `No free music for "${q}". Try a mood or genre: lofi, piano, upbeat.` }));
+  } catch (err) {
+    $('musicList').replaceChildren(el('li', { className: 'hint', textContent: err.message }));
+  }
+};
+$('musicFile').onchange = async e => {
+  const f = e.target.files[0];
+  if (f) await useMusic({ data: await f.arrayBuffer(), title: f.name, credit: '' }, URL.createObjectURL(f));
+  e.target.value = '';
+};
+
+// --- dubbing ---
+$('makeDub').onclick = async () => {
+  const lang = $('dubLang').value;
+  if (!lang) return status('Choose a language to dub into first.');
+  const said = toSegments(words().filter(w => !w.cut)); // whole sentences translate far better than caption lines
+  $('makeDub').disabled = true;
+  $('progress').hidden = false;
+  status(`Translating and voicing ${said.length} sentences. The first time downloads the language's models…`);
+  try {
+    const { audios, rate } = await askWorker({ type: 'dub', lang, texts: said.map(s => s.text) });
+    dubTrack = { pcm: placeDub(said.map((s, i) => ({ start: s.start, pcm: audios[i] })), rate, video.duration), rate };
+    avatarEnv = null; // the avatar now talks with the dub
+    setTrack('dub', URL.createObjectURL(new Blob([toWav(dubTrack.pcm, rate)], { type: 'audio/wav' })));
+    status('Dub ready. Press play to hear it; the export uses it instead of your voice.');
+  } catch (e) {
+    status(`Dubbing failed: ${e.message}`);
+  }
+  $('progress').hidden = true;
+  $('makeDub').disabled = false;
+};
+$('dubLang').onchange = () => {
+  if ($('dubLang').value) return;
+  dubTrack = null;
+  avatarEnv = null;
+  setTrack('dub', null);
+};
+
+// --- avatars ---
+let avatars = [], avatar = null, avatarEnv = null, envLoading = false;
+const urls = new WeakMap();
+const urlOf = f => urls.get(f) ?? (urls.set(f, URL.createObjectURL(f)), urls.get(f));
+const avatarOn = mode => avatar && $('avatarMode').value !== 'off' && (!mode || $('avatarMode').value === mode);
+// Loudness of whoever is talking (the dub if there is one), worked out once in the background.
+function avatarAmp(t) {
+  if (!avatarEnv && !envLoading && file) {
+    envLoading = true;
+    (async () => {
+      if (dubTrack) return envelope(dubTrack.pcm, dubTrack.rate);
+      const ac = new AudioContext({ sampleRate: 16000 });
+      try { return envelope((await ac.decodeAudioData(await file.arrayBuffer())).getChannelData(0), 16000); } finally { ac.close(); }
+    })().then(e => (avatarEnv = e), () => (avatarEnv = new Float32Array(0))).finally(() => (envLoading = false));
+  }
+  return avatarEnv?.[Math.floor(t * 30)] ?? 0;
+}
+$('avatarDir').onchange = async e => {
+  const files = await Promise.all([...e.target.files].map(async f => ({ path: f.webkitRelativePath || f.name, file: f, kind: sniffKind(new Uint8Array(await f.slice(0, 12).arrayBuffer()), f.name) })));
+  avatars = groupAvatars(files);
+  renderAvatars();
+  status(avatars.length ? `Found ${avatars.length} avatars. Pick one.` : 'No pictures or videos in that folder.');
+};
+async function pickAvatar(a) {
+  const src = urlOf((a.image ?? a.video).file);
+  const m = a.image ? Object.assign(new Image(), { src }) : Object.assign(document.createElement('video'), { src, muted: true, loop: true, playsInline: true });
+  await (a.image ? m.decode() : new Promise((res, rej) => { m.onloadeddata = res; m.onerror = rej; })).catch(() => {});
+  if (!a.image) m.play().catch(() => {});
+  avatar = { name: a.name, el: m, video: !a.image, w: m.naturalWidth || m.videoWidth, h: m.naturalHeight || m.videoHeight };
+  if (!avatar.w) return status(`${a.name}'s file can't be shown in this browser.`);
+  if ($('avatarMode').value === 'off') $('avatarMode').value = 'corner';
+  if (a.voice) new Audio(urlOf(a.voice.file)).play().catch(() => {}); // a taste of their voice
+  renderAvatars();
+}
+function renderAvatars() {
+  $('avatars').replaceChildren(...avatars.map(a => {
+    const media = a.image ? el('img', { src: urlOf(a.image.file), alt: '' }) : el('video', { src: urlOf(a.video.file), muted: true, loop: true, autoplay: true, playsInline: true });
+    const b = el('button', { type: 'button', className: 'preset', onclick: () => pickAvatar(a) }, media, el('span', { textContent: a.name }));
+    b.setAttribute('aria-pressed', avatar?.name === a.name);
+    return b;
+  }));
+}
+
 // --- preview loop ---
 let lastLine = -1, lastBroll = -1;
 function drawFrame(t) {
@@ -755,8 +923,10 @@ function drawFrame(t) {
     ctx.restore();
   } else if (!green) {
     drawFramed(W, H, z);
+    if (avatarOn('full')) drawAvatar(ctx, W, H, avatar.el, avatar.w, avatar.h, avatarAmp(t), t, 'full');
     for (const b of brolls) drawBroll(ctx, W, H, b, t, video);
   }
+  if (!green && avatarOn('corner')) drawAvatar(ctx, W, H, avatar.el, avatar.w, avatar.h, avatarAmp(t), t, 'corner');
   if (li >= 0) drawCaption(ctx, W, H, lines[li], t, PRESETS[preset], { ...settings(), index: li });
   return li;
 }
@@ -818,11 +988,15 @@ document.addEventListener('keydown', e => {
 
 // --- export ---
 $('srt').onclick = () => download(new Blob([toSrt(lines, cuts)], { type: 'text/plain' }), baseName() + '.srt');
-$('export').onclick = () => ('VideoEncoder' in window ? exportOffline(false) : exportRealtime());
+$('export').onclick = () => ('VideoEncoder' in window && 'AudioEncoder' in window ? exportOffline(false) : exportRealtime());
 $('exportGreen').onclick = () => exportOffline(true);
 
 const EXPORT_LOCKED = ['export', 'exportGreen', 'play', 'transcribe', 'srt', 'addClip'];
-const lockButtons = on => EXPORT_LOCKED.forEach(id => ($(id).disabled = on));
+// inert also freezes the panel, chat and timeline, so no edit can reach a half-rendered export.
+const lockButtons = on => {
+  EXPORT_LOCKED.forEach(id => ($(id).disabled = on));
+  for (const e of document.querySelectorAll('.panel, .rail, #chat, .timeline, #changeVideo, #undo')) e.inert = on;
+};
 
 // Resolves once el shows the frame at t. Seeking to where it already is fires no event, so skip that case.
 function seekTo(el, t) {
@@ -861,8 +1035,11 @@ async function renderAudio() {
   } finally {
     ac.close();
   }
-  let ch = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, i) => buf.getChannelData(i).slice());
-  if ($('denoise').checked) {
+  let ch = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, i) => buf.getChannelData(i));
+  if (dubTrack) {
+    const d = resample(dubTrack.pcm, dubTrack.rate, RATE), keep = $('dubKeep').checked ? 0.15 : 0;
+    ch = [ch[0].map((v, i) => v * keep + (d[i] ?? 0))];
+  } else if ($('denoise').checked) {
     status('Reducing background noise…');
     ch = await denoise(ch).catch(e => {
       console.warn('Noise reduction unavailable, exporting the original sound:', e.message);
@@ -871,6 +1048,12 @@ async function renderAudio() {
   }
   ch = cutAudio(ch, cuts, RATE);
   if ($('level').checked) levelAudio(ch, RATE);
+  if (music) {
+    const mc = new AudioContext({ sampleRate: RATE });
+    const m = await mc.decodeAudioData(music.data.slice(0)).finally(() => mc.close());
+    const bed = bedMusic(m.getChannelData(0), ch[0], RATE, +$('musicVol').value);
+    ch = ch.map(c => c.map((v, i) => v + bed[i]));
+  }
   return ch.length === 1 ? [ch[0], ch[0]] : ch;
 }
 
@@ -932,6 +1115,7 @@ async function exportOffline(captionsOnly) {
       if (!captionsOnly) {
         await seekTo(video, t);
         await Promise.all(brolls.filter(b => b.clip && t >= b.start && t < b.end).map(b => seekTo(b.clip.el, clipTime(b, t))));
+        if (avatar?.video && avatarOn()) await seekTo(avatar.el, t % avatar.el.duration);
       }
       drawFrame(t);
       const f = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
@@ -962,10 +1146,12 @@ async function exportRealtime() {
   if (!audioDest) {
     // An element can only be routed into Web Audio once, so this graph lives for the page.
     const ac = new AudioContext();
-    const src = ac.createMediaElementSource(video);
     audioDest = ac.createMediaStreamDestination();
-    src.connect(audioDest);
-    src.connect(ac.destination);
+    for (const el of [video, tracks.music, tracks.dub]) {
+      const src = ac.createMediaElementSource(el);
+      src.connect(audioDest);
+      src.connect(ac.destination);
+    }
   }
   const type = ['video/mp4;codecs=avc3,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
   if (!type) return status("This browser can't record video. Use Chrome or Edge.");

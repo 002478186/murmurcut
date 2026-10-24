@@ -20,6 +20,7 @@
       <symbol id="i-scale" viewBox="0 0 20 20"><rect x="3" y="5.5" width="14" height="9" rx="1.5"/><rect x="7" y="2.5" width="6" height="15" rx="1.5"/></symbol>
       <symbol id="i-zoom" viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4M8.5 6.5v4M6.5 8.5h4"/></symbol>
       <symbol id="i-broll" viewBox="0 0 20 20"><rect x="2.5" y="4" width="15" height="12" rx="2.5"/><path d="m4 14 4-4 3 3 2-2 3 3"/><circle cx="13" cy="7.5" r="1.2"/></symbol>
+      <symbol id="i-avatar" viewBox="0 0 20 20"><circle cx="10" cy="7.5" r="3.5"/><path d="M3.5 17c1.2-3.2 3.6-4.8 6.5-4.8s5.3 1.6 6.5 4.8"/></symbol>
       <symbol id="i-sound" viewBox="0 0 20 20"><path d="M4 8v4M7 5.5v9M10 3.5v13M13 6.5v7M16 8.5v3"/></symbol>
       <symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4.5v11l9-5.5z"/></symbol>
       <symbol id="i-send" viewBox="0 0 20 20"><path d="M4 10h11M11 5.5 15.5 10 11 14.5"/></symbol>
@@ -44,6 +45,7 @@
       <button role="tab" type="button" aria-selected="false" aria-controls="tab-scale" id="t-scale" tabindex="-1"><svg aria-hidden="true"><use href="#i-scale"/></svg><span>Scale</span></button>
       <button role="tab" type="button" aria-selected="false" aria-controls="tab-zoom" id="t-zoom" tabindex="-1"><svg aria-hidden="true"><use href="#i-zoom"/></svg><span>Zoom</span></button>
       <button role="tab" type="button" aria-selected="false" aria-controls="tab-broll" id="t-broll" tabindex="-1"><svg aria-hidden="true"><use href="#i-broll"/></svg><span>B-roll</span></button>
+      <button role="tab" type="button" aria-selected="false" aria-controls="tab-avatar" id="t-avatar" tabindex="-1"><svg aria-hidden="true"><use href="#i-avatar"/></svg><span>Avatar</span></button>
       <button role="tab" type="button" aria-selected="false" aria-controls="tab-cuts" id="t-cuts" tabindex="-1"><svg aria-hidden="true"><use href="#i-sound"/></svg><span>Sound</span></button>
     </nav>
 
@@ -151,13 +153,28 @@
         </div>
         <button id="addClip" class="btn secondary wide" type="button" disabled>Add a video clip (screen recording, gameplay…)</button>
         <input id="clipFile" type="file" accept="video/*" multiple hidden>
-        <p class="hint">A clip plays from the playhead to the end, on a split screen. Move the playhead and press Split at playhead to line each part up with what you say.</p>
+        <p class="hint">A clip plays from the playhead at its own speed, on a split screen. Move the playhead and press Split at playhead to line each part up with what you say.</p>
         <ol id="brolls" class="brolls rows"></ol>
         <details class="group credits">
           <summary>Photo credits</summary>
           <p class="hint">Put these credits in your video description.</p>
           <textarea id="credits" readonly rows="5" aria-label="Photo credits"></textarea>
         </details>
+      </div>
+
+      <div role="tabpanel" id="tab-avatar" aria-labelledby="t-avatar" class="pane" hidden>
+        <h2>Avatar</h2>
+        <p class="hint">Put a character on screen that talks when you do, or when the dub does. Open the folder of avatars you downloaded: murmurcut uses one picture or video from each subfolder, plus its voice sample if there is one. The files stay on your computer.</p>
+        <label class="btn secondary wide" for="avatarDir">Open avatar folder</label>
+        <input id="avatarDir" type="file" webkitdirectory multiple hidden>
+        <label>Show the avatar
+          <select id="avatarMode">
+            <option value="off">Off</option>
+            <option value="corner">In a corner, next to me</option>
+            <option value="full">Full screen, instead of me</option>
+          </select>
+        </label>
+        <div id="avatars" class="presets"></div>
       </div>
 
       <div role="tabpanel" id="tab-cuts" aria-labelledby="t-cuts" class="pane" hidden>
@@ -171,6 +188,28 @@
         <label class="check"><input id="denoise" type="checkbox" checked> Reduce background noise (fans, traffic, hum)</label>
         <label class="check"><input id="level" type="checkbox" checked> Even out the loudness</label>
         <p class="hint">Applied when you export. Noise reduction uses RNNoise, which downloads about 5 MB the first time.</p>
+        <h3>Music</h3>
+        <form id="musicSearch" class="search">
+          <input id="musicQuery" type="text" placeholder="lofi, upbeat, cinematic…" aria-label="Search music">
+          <button class="btn secondary" type="submit">Search</button>
+        </form>
+        <label class="btn secondary wide" for="musicFile">Use my own track</label>
+        <input id="musicFile" type="file" accept="audio/*" hidden>
+        <p id="musicNow" class="hint">No music.</p>
+        <label>Music volume <input id="musicVol" type="range" min="0" max="1" step="0.05" value="0.3"></label>
+        <ol id="musicList" class="rows"></ol>
+        <p class="hint">Search finds Creative Commons music (Jamendo, Freesound and others) that allows commercial use and changes. Music dips automatically while you talk, and its credit is added to the credits in B-roll.</p>
+        <h3>Dubbing</h3>
+        <label>Dub the voice into
+          <select id="dubLang">
+            <option value="">Off: keep my voice</option>
+            <option value="eng">English</option><option value="hin">Hindi</option><option value="spa">Spanish</option>
+            <option value="fra">French</option><option value="deu">German</option><option value="ara">Arabic</option>
+          </select>
+        </label>
+        <label class="check"><input id="dubKeep" type="checkbox" checked> Keep my voice quietly underneath</label>
+        <button id="makeDub" class="btn secondary wide" type="button" disabled>Create dub</button>
+        <p class="hint">Translates the captions and speaks each sentence with a free text-to-speech voice, timed to yours. English captions translate best. It's a generic voice, not yours, and the lips won't match. Downloads about 40–150 MB per language the first time.</p>
       </div>
     </section>
 

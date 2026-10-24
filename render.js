@@ -142,6 +142,39 @@ export function drawCover(ctx, src, sw, sh, x, y, w, h, zoom = 1, ay = 0.5) {
   ctx.drawImage(src, x + (w - sw * k) / 2, y + (h - sh * k) * ay, sw * k, sh * k);
 }
 
+// A talking character: it leans in and lifts with the loudness of the voice (amp 0..1) and sways a little.
+// Not lip-sync, but it reads as speaking. corner: a round badge top right; full: stands in for the speaker.
+export function drawAvatar(ctx, W, H, src, sw, sh, amp, t, mode) {
+  const k = 1 + 0.06 * amp, tilt = Math.sin(t * 1.7) * 0.015 + 0.02 * amp * Math.sin(t * 9);
+  ctx.save();
+  if (mode === 'corner') {
+    const d = W * 0.34, cx = W * 0.95 - d / 2, cy = H * 0.05 + d / 2;
+    ctx.fillStyle = '#f7f8f8';
+    ctx.beginPath();
+    ctx.arc(cx, cy, d / 2 + W * 0.008, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, d / 2, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.translate(cx, cy - d * 0.04 * amp);
+    ctx.rotate(tilt);
+    ctx.scale(k, k);
+    drawCover(ctx, src, sw, sh, -d / 2, -d / 2, d, d, 1.05, 0.25);
+  } else {
+    // Characters are often cut-outs, so stand them on a plain backdrop rather than a blurred copy of themselves.
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#191a1b');
+    bg.addColorStop(1, '#010102');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+    const s = Math.min(W / sw, H / sh) * 0.94 * k;
+    ctx.translate(W / 2, H * 0.98 - H * 0.03 * amp);
+    ctx.rotate(tilt);
+    ctx.drawImage(src, (-sw * s) / 2, -sh * s, sw * s, sh * s);
+  }
+  ctx.restore();
+}
+
 // The speaker on the bottom of a split screen: heads sit high in a phone frame, so crop from near the top.
 export function drawSpeaker(ctx, video, x, y, w, h) {
   ctx.save();

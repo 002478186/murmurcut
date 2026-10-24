@@ -83,7 +83,11 @@ export function parseCommand(text, ctx) {
   const actions = [], unknown = [];
   for (const p of parts) {
     const a = parseClause(p, ctx);
-    a ? actions.push(a) : unknown.push(p.trim());
+    if (!a) { unknown.push(p.trim()); continue; }
+    // "turn off noise and loudness": a part with no on/off word of its own follows the one before it.
+    const prev = actions.at(-1);
+    if ('on' in a && 'on' in (prev ?? {}) && !/\b(off|on|no|keep|remove|cut|stop|disable|enable|turn|don'?t)\b/i.test(p)) a.on = prev.on;
+    actions.push(a);
   }
   return { actions, unknown };
 }

@@ -150,4 +150,10 @@ assert.equal(domainOf(undefined), '');
   assert.equal(levelAudio([new Float32Array(100)], rate), 1, 'silence is left alone');
 }
 
+// Dead air before the first word and after the last is cut too.
+const late = toWords([{ text: ' hi', timestamp: [3, 3.5] }, { text: ' there', timestamp: [3.5, 4] }]);
+assert.deepEqual(cutRanges(late, { silence: 0.8, duration: 9 }), [[0, 2.85], [4.15, 9]]);
+assert.deepEqual(cutRanges(late, { silence: 0.8 }), [[0, 2.85]]); // no duration: the end is left alone
+assert.equal(emphasisIndex(toWords([{ text: ' the', timestamp: [0, 1] }, { text: " PS5's", timestamp: [1, 2] }, { text: ' controller', timestamp: [2, 3] }])), 1);
+
 console.log('ok');
