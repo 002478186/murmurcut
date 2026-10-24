@@ -4,6 +4,8 @@
 
 **▶ Try it: https://002478186.github.io/murmurcut/**
 
+**On iPhone:** open that link in Safari, tap Share, then Add to Home Screen. It opens full screen like an app. iPhones give a browser tab less memory, so the Fast caption model and short clips work best there.
+
 Drop in a talking clip and murmurcut does seven things:
 
 1. **Captions.** It transcribes the clip with word-level timestamps, using OpenAI's Whisper running locally through [transformers.js](https://github.com/huggingface/transformers.js). It can also translate the speech to English: talk in Hindi, Hinglish or 13 other languages and get English captions.
