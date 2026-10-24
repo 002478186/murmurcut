@@ -131,6 +131,7 @@ details.group[open] summary { color: var(--ink); }
 .search { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
 #musicList > li { grid-template-columns: 1fr; }
 #musicList audio { width: 100%; height: 32px; }
+.presets .span { grid-column: 1 / -1; margin: 6px 0 0; }
 .preset img, .preset video { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 /* style gallery: each preset previews itself on a dark frame */

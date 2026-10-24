@@ -40,9 +40,9 @@ const LLM = 'onnx-community/Qwen2.5-0.5B-Instruct';
 let llm;
 // Big models don't fit together on a modest laptop: keep only the one about to run.
 async function free(keep) {
-  for (const k of Object.keys(asrs)) { await asrs[k].asr.dispose?.(); delete asrs[k]; }
+  if (keep !== 'asr') for (const k of Object.keys(asrs)) { await asrs[k].asr.dispose?.(); delete asrs[k]; }
   if (keep !== 'llm' && llm) { await (await llm).dispose?.(); llm = null; }
-  if (keep !== 'kokoro') kokoro = null;
+  if (keep !== 'kokoro' && kokoro) { await (await kokoro.catch(() => null))?.model?.dispose?.(); kokoro = null; }
   for (const k of Object.keys(dubbers)) if (k !== keep) { await dubbers[k].tr?.dispose?.(); await dubbers[k].tts.dispose?.(); delete dubbers[k]; }
 }
 async function loadLLM() {
@@ -145,6 +145,7 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'speak') return speakText(data);
   const { audio, language, model, translate } = data;
   try {
+    await free('asr'); // e.g. Kokoro, after it spoke an avatar's script
     asrs[model] ??= await load(model);
     const { asr, gpu } = asrs[model];
     const on = gpu ? 'on your GPU' : 'on your CPU, which is slow: a minute of video can take several minutes';

@@ -876,34 +876,48 @@ function avatarAmp(t) {
   }
   return avatarEnv?.[Math.floor(t * 30)] ?? 0;
 }
+// One list: the six 3D presenters, then the photo avatars from avatars/index.json (each with its own voice clip
+// and the closest Kokoro voice, used to read scripts).
+const photoAvatars = fetch('avatars/index.json').then(r => r.json()).catch(() => []);
 async function pickAvatar(a) {
-  try { await prepare3d(); } catch (e) { return status(`3D avatars need WebGL, which this browser has turned off (${e.message}).`); }
-  avatar = { spec: a, el: render3d(a, 0, 0), w: W3D, h: H3D };
+  if (a.img) {
+    const img = Object.assign(new Image(), { src: a.img });
+    try { await img.decode(); } catch { return status(`${a.name}'s picture didn't load.`); }
+    avatar = { a, name: a.name, voice: a.kokoro, sample: a.sample, el: img, w: img.naturalWidth, h: img.naturalHeight };
+  } else {
+    try { await prepare3d(); } catch (e) { return status(`3D avatars need WebGL, which this browser has turned off (${e.message}).`); }
+    avatar = { a, name: a.name, voice: a.voice, spec: a, el: render3d(a, 0, 0), w: W3D, h: H3D };
+  }
   if ($('avatarMode').value === 'off') $('avatarMode').value = video.duration ? 'corner' : 'full';
   for (const id of ['speak', 'hearVoice']) $(id).disabled = false;
   renderAvatars();
   commit();
 }
-// Thumbnails need three.js, so they are drawn the first time the Avatar tab opens.
+// 3D thumbnails need three.js, so the list is drawn the first time the Avatar tab opens.
 let thumbs = null;
 async function renderAvatars() {
   thumbs ??= prepare3d().then(() => AVATARS.map(a => render3d(a, 0.6, 0).toDataURL('image/jpeg', 0.85)), () => []);
-  const pics = await thumbs;
-  $('avatars').replaceChildren(...AVATARS.map((a, i) => {
-    const b = el('button', { type: 'button', className: 'preset', onclick: () => pickAvatar(a) }, el('img', { src: pics[i] ?? '', alt: '' }), el('span', { textContent: a.name }));
-    b.setAttribute('aria-pressed', avatar?.spec === a);
-    b.setAttribute('aria-label', `${a.name}, 3D avatar`);
+  const [pics, photos] = await Promise.all([thumbs, photoAvatars]);
+  const card = (a, src, kind) => {
+    const b = el('button', { type: 'button', className: 'preset', onclick: () => pickAvatar(a) }, el('img', { src, alt: '', loading: 'lazy' }), el('span', { textContent: a.name }));
+    b.setAttribute('aria-pressed', avatar?.a === a);
+    b.setAttribute('aria-label', `${a.name}, ${kind}`);
     return b;
-  }));
+  };
+  $('avatars').replaceChildren(
+    el('h3', { className: 'span', textContent: '3D presenters' }), ...AVATARS.map((a, i) => card(a, pics[i] ?? '', '3D avatar')),
+    ...(photos.length ? [el('h3', { className: 'span', textContent: `Photo avatars (${photos.length})` })] : []),
+    ...photos.map(a => card(a, a.img, `${a.group} photo avatar`)));
 }
 $('t-avatar').addEventListener('click', () => renderAvatars(), { once: true });
 
 const speak = (text, voice) => askWorker({ type: 'speak', text, voice });
 $('hearVoice').onclick = async () => {
+  if (avatar.sample) return new Audio(avatar.sample).play().catch(() => status("Their voice clip didn't play."));
   $('hearVoice').disabled = true;
-  status(`${avatar.spec.name} is warming up. The first time downloads the voice model (about 90 MB)…`);
+  status(`${avatar.name} is warming up. The first time downloads the voice model (about 90 MB)…`);
   try {
-    const { pcm, rate } = await speak(`Hi, I'm ${avatar.spec.name}. Give me a script and I'll present it.`, avatar.spec.voice);
+    const { pcm, rate } = await speak(`Hi, I'm ${avatar.name}. Give me a script and I'll present it.`, avatar.voice);
     new Audio(URL.createObjectURL(new Blob([toWav(pcm, rate)], { type: 'audio/wav' }))).play().catch(() => {});
     status('');
   } catch (e) {
@@ -916,12 +930,12 @@ $('speak').onclick = async () => {
   if (!text) return status('Type what the avatar should say first.');
   $('speak').disabled = true;
   $('progress').hidden = false;
-  status(`${avatar.spec.name} is recording your script. This runs on your computer and takes a while for long scripts…`);
+  status(`${avatar.name} is recording your script. This runs on your computer and takes a while for long scripts…`);
   try {
-    const { pcm, rate } = await speak(text, avatar.spec.voice);
+    const { pcm, rate } = await speak(text, avatar.voice);
     // The spoken script becomes the video: full-screen avatar, English captions made straight away.
     video.addEventListener('loadedmetadata', () => $('transcribe').click(), { once: true });
-    load(new File([toWav(pcm, rate)], `${avatar.spec.name} presents.wav`, { type: 'audio/wav' }));
+    load(new File([toWav(pcm, rate)], `${avatar.name} presents.wav`, { type: 'audio/wav' }));
     $('avatarMode').value = 'full';
     $('lang').value = 'english';
     syncLang();
@@ -938,7 +952,7 @@ function drawFrame(t) {
   const W = canvas.width, H = canvas.height;
   const li = lines.findLastIndex(l => t >= l.start && t < l.end + 0.3);
   // The avatar is re-rendered every frame so its mouth, eyes and head follow the voice.
-  if (avatarOn() && !green) avatar.el = render3d(avatar.spec, t, avatarAmp(t));
+  if (avatarOn() && !green && avatar.spec) avatar.el = render3d(avatar.spec, t, avatarAmp(t));
   // Punch-in: every third line jumps 12% closer, the way editors cut talking heads. Manual zooms ease in and out.
   const z = Math.max($('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1, zoomAt(t));
   // Captions-on-green export: a flat key colour that any editor can remove to layer the captions over another edit.

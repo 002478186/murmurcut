@@ -1,0 +1,582 @@
+[
+ {
+  "name": "Anchor Parrot",
+  "group": "Animal Character",
+  "img": "avatars/anchor-parrot.jpg",
+  "sample": "avatars/anchor-parrot.mp3",
+  "kokoro": "bm_george"
+ },
+ {
+  "name": "Barista Calico",
+  "group": "Animal Character",
+  "img": "avatars/barista-calico.jpg",
+  "sample": "avatars/barista-calico.mp3",
+  "kokoro": "bf_alice"
+ },
+ {
+  "name": "Boss Corgi",
+  "group": "Animal Character",
+  "img": "avatars/boss-corgi.jpg",
+  "sample": "avatars/boss-corgi.mp3",
+  "kokoro": "am_fenrir"
+ },
+ {
+  "name": "Boxer Bunny",
+  "group": "Animal Character",
+  "img": "avatars/boxer-bunny.jpg",
+  "sample": "avatars/boxer-bunny.mp3",
+  "kokoro": "am_liam"
+ },
+ {
+  "name": "Ceo Orange Tabby",
+  "group": "Animal Character",
+  "img": "avatars/ceo-orange-tabby.jpg",
+  "sample": "avatars/ceo-orange-tabby.mp3",
+  "kokoro": "am_puck"
+ },
+ {
+  "name": "Chaos Husky",
+  "group": "Animal Character",
+  "img": "avatars/chaos-husky.jpg",
+  "sample": "avatars/chaos-husky.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Chef Frog",
+  "group": "Animal Character",
+  "img": "avatars/chef-frog.jpg",
+  "sample": "avatars/chef-frog.mp3",
+  "kokoro": "bm_george"
+ },
+ {
+  "name": "Coach Shiba",
+  "group": "Animal Character",
+  "img": "avatars/coach-shiba.jpg",
+  "sample": "avatars/coach-shiba.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Coder Red Panda",
+  "group": "Animal Character",
+  "img": "avatars/coder-red-panda.jpg",
+  "sample": "avatars/coder-red-panda.mp3",
+  "kokoro": "am_echo"
+ },
+ {
+  "name": "Himbo Golden",
+  "group": "Animal Character",
+  "img": "avatars/himbo-golden.jpg",
+  "sample": "avatars/himbo-golden.mp3",
+  "kokoro": "bm_daniel"
+ },
+ {
+  "name": "Judge Owl",
+  "group": "Animal Character",
+  "img": "avatars/judge-owl.jpg",
+  "sample": "avatars/judge-owl.mp3",
+  "kokoro": "bm_daniel"
+ },
+ {
+  "name": "Lawyer Shark",
+  "group": "Animal Character",
+  "img": "avatars/lawyer-shark.jpg",
+  "sample": "avatars/lawyer-shark.mp3",
+  "kokoro": "am_onyx"
+ },
+ {
+  "name": "Madame Poodle",
+  "group": "Animal Character",
+  "img": "avatars/madame-poodle.jpg",
+  "kokoro": "af_heart"
+ },
+ {
+  "name": "Princess Ragdoll",
+  "group": "Animal Character",
+  "img": "avatars/princess-ragdoll.jpg",
+  "sample": "avatars/princess-ragdoll.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Professor Penguin",
+  "group": "Animal Character",
+  "img": "avatars/professor-penguin.jpg",
+  "sample": "avatars/professor-penguin.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Raccoon Bandit",
+  "group": "Animal Character",
+  "img": "avatars/raccoon-bandit.jpg",
+  "sample": "avatars/raccoon-bandit.mp3",
+  "kokoro": "am_adam"
+ },
+ {
+  "name": "Spy Siamese",
+  "group": "Animal Character",
+  "img": "avatars/spy-siamese.jpg",
+  "sample": "avatars/spy-siamese.mp3",
+  "kokoro": "af_kore"
+ },
+ {
+  "name": "Trader Hamster",
+  "group": "Animal Character",
+  "img": "avatars/trader-hamster.jpg",
+  "sample": "avatars/trader-hamster.mp3",
+  "kokoro": "bm_daniel"
+ },
+ {
+  "name": "Witch Black Cat",
+  "group": "Animal Character",
+  "img": "avatars/witch-black-cat.jpg",
+  "sample": "avatars/witch-black-cat.mp3",
+  "kokoro": "af_alloy"
+ },
+ {
+  "name": "50s Greaser",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/50s-greaser.jpg",
+  "sample": "avatars/50s-greaser.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "80s Aerobics Coach",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/80s-aerobics-coach.jpg",
+  "sample": "avatars/80s-aerobics-coach.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Android",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/android.jpg",
+  "sample": "avatars/android.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Angel Influencer",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/angel-influencer.jpg",
+  "sample": "avatars/angel-influencer.mp3",
+  "kokoro": "bf_alice"
+ },
+ {
+  "name": "Classic Goth Girl",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/classic-goth-girl.jpg",
+  "sample": "avatars/classic-goth-girl.mp3",
+  "kokoro": "bf_lily"
+ },
+ {
+  "name": "Cyber Goth",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/cyber-goth.jpg",
+  "sample": "avatars/cyber-goth.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Cyberpunk Runner",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/cyberpunk-runner.jpg",
+  "sample": "avatars/cyberpunk-runner.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Dark Academia Boy",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/dark-academia-boy.jpg",
+  "sample": "avatars/dark-academia-boy.mp3",
+  "kokoro": "am_onyx"
+ },
+ {
+  "name": "Day Of The Dead",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/day-of-the-dead.jpg",
+  "sample": "avatars/day-of-the-dead.mp3",
+  "kokoro": "af_heart"
+ },
+ {
+  "name": "Demon Ceo",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/demon-ceo.jpg",
+  "sample": "avatars/demon-ceo.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Disco King",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/disco-king.jpg",
+  "sample": "avatars/disco-king.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Elf Archer",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/elf-archer.jpg",
+  "sample": "avatars/elf-archer.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Gladiator",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/gladiator.jpg",
+  "sample": "avatars/gladiator.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Medieval Knight",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/medieval-knight.jpg",
+  "sample": "avatars/medieval-knight.mp3",
+  "kokoro": "bm_fable"
+ },
+ {
+  "name": "Mermaid",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/mermaid.jpg",
+  "sample": "avatars/mermaid.mp3",
+  "kokoro": "af_alloy"
+ },
+ {
+  "name": "Pharaoh",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/pharaoh.jpg",
+  "sample": "avatars/pharaoh.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Pirate Captain",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/pirate-captain.jpg",
+  "sample": "avatars/pirate-captain.mp3",
+  "kokoro": "am_michael"
+ },
+ {
+  "name": "Samurai",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/samurai.jpg",
+  "sample": "avatars/samurai.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Steampunk Inventor",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/steampunk-inventor.jpg",
+  "sample": "avatars/steampunk-inventor.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Vampire Lord",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/vampire-lord.jpg",
+  "sample": "avatars/vampire-lord.mp3",
+  "kokoro": "am_onyx"
+ },
+ {
+  "name": "Vaporwave Statue",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/vaporwave-statue.jpg",
+  "sample": "avatars/vaporwave-statue.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Victorian Goth",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/victorian-goth.jpg",
+  "sample": "avatars/victorian-goth.mp3",
+  "kokoro": "af_alloy"
+ },
+ {
+  "name": "Viking Warrior",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/viking-warrior.jpg",
+  "sample": "avatars/viking-warrior.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Wild West Cowboy",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/wild-west-cowboy.jpg",
+  "sample": "avatars/wild-west-cowboy.mp3",
+  "kokoro": "am_onyx"
+ },
+ {
+  "name": "Witch",
+  "group": "Fantasy/GenreX",
+  "img": "avatars/witch.jpg",
+  "sample": "avatars/witch.mp3",
+  "kokoro": "af_alloy"
+ },
+ {
+  "name": "Asmr Sergeant Marcus",
+  "group": "Human Archetypes",
+  "img": "avatars/asmr-sergeant-marcus.jpg",
+  "sample": "avatars/asmr-sergeant-marcus.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Austin Cowgirl Jolene",
+  "group": "Human Archetypes",
+  "img": "avatars/austin-cowgirl-jolene.jpg",
+  "sample": "avatars/austin-cowgirl-jolene.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Berlin Dj Lukas",
+  "group": "Human Archetypes",
+  "img": "avatars/berlin-dj-lukas.jpg",
+  "sample": "avatars/berlin-dj-lukas.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Boomer Grandma Betty",
+  "group": "Human Archetypes",
+  "img": "avatars/boomer-grandma-betty.jpg",
+  "sample": "avatars/boomer-grandma-betty.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Brainrot Jayden",
+  "group": "Human Archetypes",
+  "img": "avatars/brainrot-jayden.jpg",
+  "sample": "avatars/brainrot-jayden.mp3",
+  "kokoro": "am_fenrir"
+ },
+ {
+  "name": "Clean Girl Aria",
+  "group": "Human Archetypes",
+  "img": "avatars/clean-girl-aria.jpg",
+  "sample": "avatars/clean-girl-aria.mp3",
+  "kokoro": "af_sarah"
+ },
+ {
+  "name": "Cool Grandpa Hiroshi",
+  "group": "Human Archetypes",
+  "img": "avatars/cool-grandpa-hiroshi.jpg",
+  "sample": "avatars/cool-grandpa-hiroshi.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Coquette Destiny",
+  "group": "Human Archetypes",
+  "img": "avatars/coquette-destiny.jpg",
+  "sample": "avatars/coquette-destiny.mp3",
+  "kokoro": "bf_lily"
+ },
+ {
+  "name": "Cottagecore Lily",
+  "group": "Human Archetypes",
+  "img": "avatars/cottagecore-lily.jpg",
+  "sample": "avatars/cottagecore-lily.mp3",
+  "kokoro": "bf_lily"
+ },
+ {
+  "name": "Dubai Rich Kid Khalid",
+  "group": "Human Archetypes",
+  "img": "avatars/dubai-rich-kid-khalid.jpg",
+  "sample": "avatars/dubai-rich-kid-khalid.mp3",
+  "kokoro": "bm_daniel"
+ },
+ {
+  "name": "Emo Revival Sage",
+  "group": "Human Archetypes",
+  "img": "avatars/emo-revival-sage.jpg",
+  "sample": "avatars/emo-revival-sage.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Gen Z Professor Miles",
+  "group": "Human Archetypes",
+  "img": "avatars/gen-z-professor-miles.jpg",
+  "sample": "avatars/gen-z-professor-miles.mp3",
+  "kokoro": "am_puck"
+ },
+ {
+  "name": "Gen Z Surgeon Nia",
+  "group": "Human Archetypes",
+  "img": "avatars/gen-z-surgeon-nia.jpg",
+  "sample": "avatars/gen-z-surgeon-nia.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Girlboss Priya",
+  "group": "Human Archetypes",
+  "img": "avatars/girlboss-priya.jpg",
+  "sample": "avatars/girlboss-priya.mp3",
+  "kokoro": "af_river"
+ },
+ {
+  "name": "Glam Grandma Loretta",
+  "group": "Human Archetypes",
+  "img": "avatars/glam-grandma-loretta.jpg",
+  "sample": "avatars/glam-grandma-loretta.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Harajuku Yuki",
+  "group": "Human Archetypes",
+  "img": "avatars/harajuku-yuki.jpg",
+  "sample": "avatars/harajuku-yuki.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Lagos Techbro Emeka",
+  "group": "Human Archetypes",
+  "img": "avatars/lagos-techbro-emeka.jpg",
+  "sample": "avatars/lagos-techbro-emeka.mp3",
+  "kokoro": "bm_daniel"
+ },
+ {
+  "name": "London Roadman Callum",
+  "group": "Human Archetypes",
+  "img": "avatars/london-roadman-callum.jpg",
+  "sample": "avatars/london-roadman-callum.mp3",
+  "kokoro": "bm_daniel"
+ },
+ {
+  "name": "Mob Wife Valentina",
+  "group": "Human Archetypes",
+  "img": "avatars/mob-wife-valentina.jpg",
+  "sample": "avatars/mob-wife-valentina.mp3",
+  "kokoro": "af_heart"
+ },
+ {
+  "name": "Mumbai Creator Ananya",
+  "group": "Human Archetypes",
+  "img": "avatars/mumbai-creator-ananya.jpg",
+  "sample": "avatars/mumbai-creator-ananya.mp3",
+  "kokoro": "af_jessica"
+ },
+ {
+  "name": "Old Money Arjun",
+  "group": "Human Archetypes",
+  "img": "avatars/old-money-arjun.jpg",
+  "sample": "avatars/old-money-arjun.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Paris Art Student Camille",
+  "group": "Human Archetypes",
+  "img": "avatars/paris-art-student-camille.jpg",
+  "sample": "avatars/paris-art-student-camille.mp3",
+  "kokoro": "af_heart"
+ },
+ {
+  "name": "S O Paulo Mc Rafa",
+  "group": "Human Archetypes",
+  "img": "avatars/s-o-paulo-mc-rafa.jpg",
+  "sample": "avatars/s-o-paulo-mc-rafa.mp3",
+  "kokoro": "am_fenrir"
+ },
+ {
+  "name": "Seoul Trainee Soojin",
+  "group": "Human Archetypes",
+  "img": "avatars/seoul-trainee-soojin.jpg",
+  "sample": "avatars/seoul-trainee-soojin.mp3",
+  "kokoro": "af_bella"
+ },
+ {
+  "name": "Sigma Kyle",
+  "group": "Human Archetypes",
+  "img": "avatars/sigma-kyle.jpg",
+  "sample": "avatars/sigma-kyle.mp3",
+  "kokoro": "am_puck"
+ },
+ {
+  "name": "Skater Accountant Kevin",
+  "group": "Human Archetypes",
+  "img": "avatars/skater-accountant-kevin.jpg",
+  "sample": "avatars/skater-accountant-kevin.mp3",
+  "kokoro": "am_adam"
+ },
+ {
+  "name": "Streetwear King Darius",
+  "group": "Human Archetypes",
+  "img": "avatars/streetwear-king-darius.jpg",
+  "sample": "avatars/streetwear-king-darius.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Tattooed Librarian Rosa",
+  "group": "Human Archetypes",
+  "img": "avatars/tattooed-librarian-rosa.jpg",
+  "sample": "avatars/tattooed-librarian-rosa.mp3",
+  "kokoro": "bf_lily"
+ },
+ {
+  "name": "That Girl Mei",
+  "group": "Human Archetypes",
+  "img": "avatars/that-girl-mei.jpg",
+  "sample": "avatars/that-girl-mei.mp3",
+  "kokoro": "bf_lily"
+ },
+ {
+  "name": "Yoga Dad Greg",
+  "group": "Human Archetypes",
+  "img": "avatars/yoga-dad-greg.jpg",
+  "sample": "avatars/yoga-dad-greg.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Bloomer",
+  "group": "Meme Characters",
+  "img": "avatars/bloomer.jpg",
+  "sample": "avatars/bloomer.mp3",
+  "kokoro": "am_adam"
+ },
+ {
+  "name": "Boomer Wojak",
+  "group": "Meme Characters",
+  "img": "avatars/boomer-wojak.jpg",
+  "sample": "avatars/boomer-wojak.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Distracted Boyfriend",
+  "group": "Meme Characters",
+  "img": "avatars/distracted-boyfriend.jpg",
+  "sample": "avatars/distracted-boyfriend.mp3",
+  "kokoro": "am_fenrir"
+ },
+ {
+  "name": "Doomer Dan",
+  "group": "Meme Characters",
+  "img": "avatars/doomer-dan.jpg",
+  "sample": "avatars/doomer-dan.mp3",
+  "kokoro": "bm_lewis"
+ },
+ {
+  "name": "Doomer Girl",
+  "group": "Meme Characters",
+  "img": "avatars/doomer-girl.jpg",
+  "sample": "avatars/doomer-girl.mp3",
+  "kokoro": "af_alloy"
+ },
+ {
+  "name": "Grumpy Bird",
+  "group": "Meme Characters",
+  "img": "avatars/grumpy-bird.jpg",
+  "sample": "avatars/grumpy-bird.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Soyjak",
+  "group": "Meme Characters",
+  "img": "avatars/soyjak.jpg",
+  "sample": "avatars/soyjak.mp3",
+  "kokoro": "am_santa"
+ },
+ {
+  "name": "Tradwife",
+  "group": "Meme Characters",
+  "img": "avatars/tradwife.jpg",
+  "sample": "avatars/tradwife.mp3",
+  "kokoro": "bf_lily"
+ },
+ {
+  "name": "Zoomer",
+  "group": "Meme Characters",
+  "img": "avatars/zoomer.jpg",
+  "sample": "avatars/zoomer.mp3",
+  "kokoro": "am_puck"
+ }
+]
