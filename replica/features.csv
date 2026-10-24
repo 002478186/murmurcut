@@ -13,7 +13,7 @@ Remove silences,smart-cuts,should,yes,yes,threshold slider
 Export video with burned-in captions,export,must,yes,yes,MediaRecorder; mp4 where the browser supports it
 Export SRT,export,should,yes,yes,
 Translation,transcribe,could,yes,yes,speech to English captions via Whisper translate
-AI avatars,ai,should,yes,yes,user's own avatar folder; voice-driven motion (no lip-sync)
+AI avatars,ai,should,yes,yes,six 3D presenters (three.js) with Kokoro voices; script-to-avatar video; amplitude-driven mouth
 Eye contact correction,ai,skip,yes,no,needs proprietary models
 AI dubbing,ai,should,yes,yes,opus-mt + MMS TTS in the browser; generic voice (no clone)
 Music library,assets,should,yes,yes,Openverse CC music (commercial+modification) or own upload; auto-ducking

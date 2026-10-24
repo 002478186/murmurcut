@@ -1,8 +1,7 @@
 import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, escapeRe, toOutput, toSource, splitClip, clipTime } from './captions.js';
 import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker, drawAvatar } from './render.js';
 import { cutAudio, levelAudio, resample, envelope, placeDub, bedMusic, toWav } from './audio.js';
-import { sniffKind, groupAvatars } from './avatars.js';
-import { TOONS, drawToon } from './toons.js';
+import { AVATARS, W3D, H3D, prepare3d, render3d } from './avatar3d.js';
 import { parseCommand, CHAT_EXAMPLES } from './chat.js';
 
 const $ = id => document.getElementById(id);
@@ -64,7 +63,7 @@ $('t-captions').closest('[role="tablist"]').addEventListener('keydown', e => {
 // --- import ---
 function load(f) {
   if (exporting) return status('Wait for the export to finish first.');
-  if (!f?.type.startsWith('video/')) return status('That file is not a video. Choose an MP4, MOV or WebM file.');
+  if (!/^(video|audio)\//.test(f?.type)) return status('That file is not a video. Choose an MP4, MOV or WebM file.');
   file = f;
   lines = [];
   brolls = [];
@@ -156,7 +155,7 @@ worker.onerror = e => {
   worker.onmessage({ data: { type: 'error', message: error } });
 };
 worker.onmessage = ({ data }) => {
-  if (data.type === 'ranked' || data.type === 'suggested' || data.type === 'dubbed') { pending.get(data.id)?.(data); pending.delete(data.id); return; }
+  if (['ranked', 'suggested', 'dubbed', 'spoken'].includes(data.type)) { pending.get(data.id)?.(data); pending.delete(data.id); return; }
   if (data.type === 'progress') { $('progress').value = data.progress / 100; return; }
   if (data.type === 'status') { $('progress').removeAttribute('value'); return status(data.text); }
   $('progress').hidden = true;
@@ -166,7 +165,7 @@ worker.onmessage = ({ data }) => {
   heard = ws.map(w => ({ ...w }));
   lines = groupWords(ws);
   topic = topicOf(ws);
-  brolls = [...brolls.filter(b => b.clip), ...planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, planned: b.mode, options: [], pick: 0 }))].sort((x, y) => x.start - y.start);
+  brolls = [...brolls.filter(b => b.clip), ...planBroll(data.segments ?? toSegments(ws)).map(b => ({ ...b, planned: b.mode, auto: true, options: [], pick: 0 }))].sort((x, y) => x.start - y.start);
   topicInfo = genericPool = null;
   updateCuts();
   renderAll();
@@ -379,6 +378,10 @@ async function search(b) {
   if (b.run !== run) return;
   if (fits && b.img && !abstract) {
     if (b.mode === 'text') b.mode = b.planned ?? 'full';
+  } else if (b.auto && !abstract && !/^\p{Lu}|\d/u.test(q) && !results.some(r => r.status === 'rejected')) {
+    // A plain word with no fitting photo: better no b-roll here than a text card saying "background".
+    brolls = brolls.filter(x => x !== b);
+    renderBrolls();
   } else {
     b.mode = 'text';
     const err = results.find(r => r.status === 'rejected')?.reason?.message;
@@ -610,8 +613,7 @@ const setRadio = (name, value) => { const r = document.querySelector(`input[name
 const RATIOS = { '9:16': 9 / 16, '4:5': 4 / 5, '1:1': 1, '16:9': 16 / 9 };
 // Short side 1080 keeps captions and exports sharp on Reels and YouTube; H.264 needs even sizes.
 function sizeCanvas() {
-  if (!video.videoWidth) return;
-  const r = RATIOS[radio('ratio')] ?? video.videoWidth / video.videoHeight;
+  const r = RATIOS[radio('ratio')] ?? (video.videoWidth ? video.videoWidth / video.videoHeight : 9 / 16); // no picture (an avatar's script): 9:16
   const even = n => Math.round(n / 2) * 2;
   [canvas.width, canvas.height] = r <= 1 ? [1080, even(1080 / r)] : [even(1080 * r), 1080];
 }
@@ -620,6 +622,7 @@ document.querySelectorAll('input[name="ratio"]').forEach(r => (r.onchange = size
 // The speaker in the chosen format: cropped to fill (keeping the chosen part of the frame), or whole over a blurred copy.
 function drawFramed(W, H, z) {
   const sw = video.videoWidth, sh = video.videoHeight;
+  if (!sw) return; // sound only
   if (radio('fit') === 'fit' && Math.abs(sw / sh - W / H) > 0.01) {
     ctx.save();
     ctx.filter = 'blur(28px) brightness(0.55)';
@@ -857,9 +860,9 @@ $('dubLang').onchange = () => {
 };
 
 // --- avatars ---
-let avatars = [], avatar = null, avatarEnv = null, envLoading = false;
-const urls = new WeakMap();
-const urlOf = f => urls.get(f) ?? (urls.set(f, URL.createObjectURL(f)), urls.get(f));
+// 3D presenters (avatar3d.js). In a corner or full screen they move with the video's voice (or the dub).
+// "Make avatar video" gives one its own Kokoro voice reading a script, and that becomes the video.
+let avatar = null, avatarEnv = null, envLoading = false;
 const avatarOn = mode => avatar && $('avatarMode').value !== 'off' && (!mode || $('avatarMode').value === mode);
 // Loudness of whoever is talking (the dub if there is one), worked out once in the background.
 function avatarAmp(t) {
@@ -873,49 +876,69 @@ function avatarAmp(t) {
   }
   return avatarEnv?.[Math.floor(t * 30)] ?? 0;
 }
-$('avatarDir').onchange = async e => {
-  const files = await Promise.all([...e.target.files].map(async f => ({ path: f.webkitRelativePath || f.name, file: f, kind: sniffKind(new Uint8Array(await f.slice(0, 12).arrayBuffer()), f.name) })));
-  avatars = groupAvatars(files);
-  renderAvatars();
-  status(avatars.length ? `Found ${avatars.length} avatars. Pick one.` : 'No pictures or videos in that folder.');
-};
-const TOON_W = 720, TOON_H = 1280;
 async function pickAvatar(a) {
-  if (a.toon) {
-    avatar = { name: a.name, toon: a.toon, el: el('canvas', { width: TOON_W, height: TOON_H }), w: TOON_W, h: TOON_H };
-    if ($('avatarMode').value === 'off') $('avatarMode').value = 'corner';
-    return renderAvatars();
-  }
-  const src = urlOf((a.image ?? a.video).file);
-  const m = a.image ? Object.assign(new Image(), { src }) : Object.assign(document.createElement('video'), { src, muted: true, loop: true, playsInline: true });
-  await (a.image ? m.decode() : new Promise((res, rej) => { m.onloadeddata = res; m.onerror = rej; })).catch(() => {});
-  if (!a.image) m.play().catch(() => {});
-  avatar = { name: a.name, el: m, video: !a.image, w: m.naturalWidth || m.videoWidth, h: m.naturalHeight || m.videoHeight };
-  if (!avatar.w) return status(`${a.name}'s file can't be shown in this browser.`);
-  if ($('avatarMode').value === 'off') $('avatarMode').value = 'corner';
-  if (a.voice) new Audio(urlOf(a.voice.file)).play().catch(() => {}); // a taste of their voice
+  try { await prepare3d(); } catch (e) { return status(`3D avatars need WebGL, which this browser has turned off (${e.message}).`); }
+  avatar = { spec: a, el: render3d(a, 0, 0), w: W3D, h: H3D };
+  if ($('avatarMode').value === 'off') $('avatarMode').value = video.duration ? 'corner' : 'full';
+  for (const id of ['speak', 'hearVoice']) $(id).disabled = false;
   renderAvatars();
+  commit();
 }
-// The built-in characters come first; avatars from an opened folder follow.
-function renderAvatars() {
-  $('avatars').replaceChildren(...[...TOONS.map(toon => ({ name: toon.name, toon })), ...avatars].map(a => {
-    let media;
-    if (a.toon) { media = el('canvas', { width: 180, height: 320 }); drawToon(media.getContext('2d'), a.toon, 180, 320, 0.5, 1); }
-    else media = a.image ? el('img', { src: urlOf(a.image.file), alt: '' }) : el('video', { src: urlOf(a.video.file), muted: true, loop: true, autoplay: true, playsInline: true });
-    const b = el('button', { type: 'button', className: 'preset', onclick: () => pickAvatar(a) }, media, el('span', { textContent: a.name }));
-    b.setAttribute('aria-pressed', avatar?.name === a.name);
+// Thumbnails need three.js, so they are drawn the first time the Avatar tab opens.
+let thumbs = null;
+async function renderAvatars() {
+  thumbs ??= prepare3d().then(() => AVATARS.map(a => render3d(a, 0.6, 0).toDataURL('image/jpeg', 0.85)), () => []);
+  const pics = await thumbs;
+  $('avatars').replaceChildren(...AVATARS.map((a, i) => {
+    const b = el('button', { type: 'button', className: 'preset', onclick: () => pickAvatar(a) }, el('img', { src: pics[i] ?? '', alt: '' }), el('span', { textContent: a.name }));
+    b.setAttribute('aria-pressed', avatar?.spec === a);
+    b.setAttribute('aria-label', `${a.name}, 3D avatar`);
     return b;
   }));
 }
-renderAvatars();
+$('t-avatar').addEventListener('click', () => renderAvatars(), { once: true });
+
+const speak = (text, voice) => askWorker({ type: 'speak', text, voice });
+$('hearVoice').onclick = async () => {
+  $('hearVoice').disabled = true;
+  status(`${avatar.spec.name} is warming up. The first time downloads the voice model (about 90 MB)…`);
+  try {
+    const { pcm, rate } = await speak(`Hi, I'm ${avatar.spec.name}. Give me a script and I'll present it.`, avatar.spec.voice);
+    new Audio(URL.createObjectURL(new Blob([toWav(pcm, rate)], { type: 'audio/wav' }))).play().catch(() => {});
+    status('');
+  } catch (e) {
+    status(`The voice failed: ${e.message}`);
+  }
+  $('hearVoice').disabled = false;
+};
+$('speak').onclick = async () => {
+  const text = $('avatarScript').value.trim();
+  if (!text) return status('Type what the avatar should say first.');
+  $('speak').disabled = true;
+  $('progress').hidden = false;
+  status(`${avatar.spec.name} is recording your script. This runs on your computer and takes a while for long scripts…`);
+  try {
+    const { pcm, rate } = await speak(text, avatar.spec.voice);
+    // The spoken script becomes the video: full-screen avatar, English captions made straight away.
+    video.addEventListener('loadedmetadata', () => $('transcribe').click(), { once: true });
+    load(new File([toWav(pcm, rate)], `${avatar.spec.name} presents.wav`, { type: 'audio/wav' }));
+    $('avatarMode').value = 'full';
+    $('lang').value = 'english';
+    syncLang();
+  } catch (e) {
+    status(`Recording failed: ${e.message}`);
+  }
+  $('progress').hidden = true;
+  $('speak').disabled = false;
+};
 
 // --- preview loop ---
 let lastLine = -1, lastBroll = -1;
 function drawFrame(t) {
   const W = canvas.width, H = canvas.height;
   const li = lines.findLastIndex(l => t >= l.start && t < l.end + 0.3);
-  // A built-in character is redrawn every frame so its mouth follows the voice.
-  if (avatar?.toon && avatarOn() && !green) drawToon(avatar.el.getContext('2d'), avatar.toon, TOON_W, TOON_H, avatarAmp(t), t);
+  // The avatar is re-rendered every frame so its mouth, eyes and head follow the voice.
+  if (avatarOn() && !green) avatar.el = render3d(avatar.spec, t, avatarAmp(t));
   // Punch-in: every third line jumps 12% closer, the way editors cut talking heads. Manual zooms ease in and out.
   const z = Math.max($('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1, zoomAt(t));
   // Captions-on-green export: a flat key colour that any editor can remove to layer the captions over another edit.
@@ -1128,7 +1151,6 @@ async function exportOffline(captionsOnly) {
       if (!captionsOnly) {
         await seekTo(video, t);
         await Promise.all(brolls.filter(b => b.clip && t >= b.start && t < b.end).map(b => seekTo(b.clip.el, clipTime(b, t))));
-        if (avatar?.video && avatarOn()) await seekTo(avatar.el, t % avatar.el.duration);
       }
       drawFrame(t);
       const f = new VideoFrame(canvas, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });

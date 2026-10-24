@@ -42,6 +42,7 @@ let llm;
 async function free(keep) {
   for (const k of Object.keys(asrs)) { await asrs[k].asr.dispose?.(); delete asrs[k]; }
   if (keep !== 'llm' && llm) { await (await llm).dispose?.(); llm = null; }
+  if (keep !== 'kokoro') kokoro = null;
   for (const k of Object.keys(dubbers)) if (k !== keep) { await dubbers[k].tr?.dispose?.(); await dubbers[k].tts.dispose?.(); delete dubbers[k]; }
 }
 async function loadLLM() {
@@ -83,6 +84,32 @@ async function suggest({ id, domain, sentences }) {
   }
 }
 
+// Avatar voices: Kokoro (82M parameters, 28 English voices) reading a script, sentence by sentence.
+const KOKORO = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm';
+let kokoro = null;
+async function speakText({ id, text, voice }) {
+  try {
+    await free('kokoro');
+    kokoro ??= import(KOKORO).then(({ KokoroTTS }) => KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: 'q8', device: 'wasm', progress_callback }));
+    const tts = await kokoro;
+    const parts = text.match(/[^.!?\n]+[.!?]*/g)?.map(s => s.trim()).filter(Boolean) ?? [text];
+    const chunks = [];
+    let rate = 24000;
+    for (const [i, s] of parts.entries()) {
+      const a = await tts.generate(s, { voice });
+      rate = a.sampling_rate;
+      chunks.push(a.audio, new Float32Array(Math.round(rate * 0.18))); // a breath between sentences
+      self.postMessage({ type: 'progress', progress: ((i + 1) / parts.length) * 100 });
+    }
+    const pcm = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+    chunks.reduce((o, c) => (pcm.set(c, o), o + c.length), 0);
+    self.postMessage({ type: 'spoken', id, pcm, rate }, [pcm.buffer]);
+  } catch (e) {
+    kokoro = null;
+    self.postMessage({ type: 'spoken', id, error: e.message });
+  }
+}
+
 // Dubbing: translate each English sentence (opus-mt), then speak it with Meta's MMS voice for that language.
 const dubbers = {};
 const DUB_MT = { hin: 'hi', spa: 'es', fra: 'fr', deu: 'de', ara: 'ar' }; // eng is spoken as-is
@@ -115,6 +142,7 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'rank') return rank(data);
   if (data.type === 'suggest') return suggest(data);
   if (data.type === 'dub') return dub(data);
+  if (data.type === 'speak') return speakText(data);
   const { audio, language, model, translate } = data;
   try {
     asrs[model] ??= await load(model);

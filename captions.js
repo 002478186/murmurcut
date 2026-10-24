@@ -146,7 +146,10 @@ const STOP = new Set(('a an the and or but so if then than that this these those
   'do does did done doing have has had having to of in on at by for with about from up down out over into after before again ' +
   'one two lot lots way much many even still well yeah okay ok guys hey welcome back today let let\'s going gonna want know think ' +
   'say said see look make made come came give take good great new old because while during per mean means kind sort around ' +
-  'after somewhere tell thank thanks comment man little').split(' '));
+  'after somewhere tell thank thanks comment man little ' +
+  // words that can't be pictured: vague nouns and common irregular verbs
+  'background permission attitude idea interest reason general life lives year years ages part side fact case question answer ' +
+  'became become began grew outgrew knew thought felt found gave went taught told brought bought kept left heard meant ever never always').split(' '));
 
 // Scores words by how picturable they are: names, acronyms (PS5, DMZ) and long nouns beat filler.
 // Returns { word, score, idx, num } for the best one in the whitespace-split text, or null.
@@ -158,6 +161,7 @@ function scoreKeyword(text) {
   let best = null;
   toks.forEach((t, i) => {
     if (!ok(t) || (t.length < 3 && !/\d/.test(t)) || /^\d+$/.test(t)) return;
+    if (/^\p{Ll}/u.test(t) && t.length > 4 && /(ed|ly)$/.test(t)) return;
     let word = t, score = Math.min(t.length, 10);
     if (/^\p{Lu}[\p{Lu}\d]+$/u.test(t)) score += 8;
     else if (isProper(t)) score += 6;
@@ -165,7 +169,7 @@ function scoreKeyword(text) {
     let j = i;
     if (isProper(t) && isProper(toks[i + 1] ?? '')) [word, score, j] = [`${t} ${toks[i + 1]}`, score + 3, i + 1];
     // Keep a sequel number with its name: "Modern Warfare 4" is a game, "Modern Warfare" is a military term.
-    if (j > i && /^\d{1,4}$/.test(toks[j + 1] ?? '')) [word, j] = [`${word} ${toks[j + 1]}`, j + 1];
+    if (isProper(t) && /^\d{1,4}$/.test(toks[j + 1] ?? '')) [word, j] = [`${word} ${toks[j + 1]}`, j + 1];
     if (!best || score > best.score) best = { word, score, idx: i, end: j };
   });
   if (best) best.num = toks.slice(Math.max(0, best.idx - 2), best.end + 4).find((t, k) => /^\d+$/.test(t) && !best.word.includes(t));
@@ -185,7 +189,7 @@ export const domainOf = description =>
   (description ?? '').split(/,| of | by | in | who | that /)[0].replace(/\b\d{4}s?\b/g, '').trim().split(/\s+/).slice(-2).join(' ');
 
 // Websites, companies, scores: things a photo can't honestly show, so their name (and number) works better as text.
-const ABSTRACT = /\b(website|web site|company|corporation|organi[sz]ation|aggregator|platform|service|software|app|application|brand|magazine|publisher|award|index|rating|search engine|social network)\b/i;
+const ABSTRACT = /\b(website|web site|company|corporation|organi[sz]ation|aggregator|platform|service|software|app|application|magazine|publisher|award|index|rating|search engine|social network)\b/i;
 export const isAbstract = description => ABSTRACT.test(description ?? '');
 
 // Tidies a language model's search: first line, no punctuation or repeats, no topic words (they drown out the scene), 4 words max.
@@ -223,7 +227,8 @@ export function planBroll(segments, { minGap = 2.5, dur = 2.5, start = 1.5 } = {
   }
   const picked = [];
   for (const c of cands.sort((a, b) => b.score - a.score))
-    if (picked.every(p => c.start >= p.end + minGap || c.end + minGap <= p.start)) picked.push(c);
+    // one moment per keyword: the same photo three times is worse than the next-best topic
+    if (picked.every(p => (c.start >= p.end + minGap || c.end + minGap <= p.start) && p.query.toLowerCase() !== c.query.toLowerCase())) picked.push(c);
   return picked
     .sort((a, b) => a.start - b.start)
     .map(({ score, ...c }, i) => ({ ...c, mode: BROLL_MODES[i % BROLL_MODES.length] }));

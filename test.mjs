@@ -62,6 +62,7 @@ const meta = planBroll([{ start: 3, end: 6, text: 'After review, Metacritic gave
 assert.deepEqual([meta.query, meta.label, meta.context], ['Metacritic', 'Metacritic 84', 'After review, Metacritic gave 84, campaign']);
 
 assert.ok(isAbstract('American review aggregator website'));
+assert.ok(!isAbstract('Video gaming brand by Sony'));
 assert.ok(!isAbstract('Home video game console by Sony'));
 assert.ok(!isAbstract('Capital of Maharashtra, India'));
 
@@ -155,5 +156,17 @@ const late = toWords([{ text: ' hi', timestamp: [3, 3.5] }, { text: ' there', ti
 assert.deepEqual(cutRanges(late, { silence: 0.8, duration: 9 }), [[0, 2.85], [4.15, 9]]);
 assert.deepEqual(cutRanges(late, { silence: 0.8 }), [[0, 2.85]]); // no duration: the end is left alone
 assert.equal(emphasisIndex(toWords([{ text: ' the', timestamp: [0, 1] }, { text: " PS5's", timestamp: [1, 2] }, { text: ' controller', timestamp: [2, 3] }])), 1);
+
+// Real lines from an English interview: the picture is a thing, not a verb or a vague word.
+for (const [line, want] of [
+  ['life depends on science and the background that science gives to engineering.', 'engineering'],
+  ['I have no idea how I became interested in astronomy. Most children are interested', 'astronomy'],
+  ['and asked for permission to take a second year of algebra instead', 'algebra'],
+  ['We would not even have refrigerators without basic science.', 'refrigerators'],
+  ['My name is Nancy Grace Roman, and I am known as the mother', 'Nancy Grace'],
+  ['Today we are looking at the new PlayStation 5.', 'PlayStation 5'],
+]) assert.equal(pickKeyword(line), want, line);
+assert.deepEqual(planBroll([10, 20, 30].map(s => ({ start: s, end: s + 3, text: 'I love astronomy so much' }))).length, 1);
+assert.notEqual(pickKeyword('ages of 10 and 12, and I never outgrew it. I wanted to know what stars were like,'), 'outgrew');
 
 console.log('ok');

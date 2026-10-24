@@ -164,9 +164,8 @@
 
       <div role="tabpanel" id="tab-avatar" aria-labelledby="t-avatar" class="pane" hidden>
         <h2>Avatar</h2>
-        <p class="hint">Put a character on screen that talks when you do, or when the dub does. Open the folder of avatars you downloaded: murmurcut uses one picture or video from each subfolder, plus its voice sample if there is one. The files stay on your computer.</p>
-        <label class="btn secondary wide" for="avatarDir">Open avatar folder</label>
-        <input id="avatarDir" type="file" webkitdirectory multiple hidden>
+        <p class="hint">3D presenters with their own voices. Put one next to you, or let one present a script for you. Everything runs on your computer.</p>
+        <div id="avatars" class="presets"><p class="hint">Loading avatars…</p></div>
         <label>Show the avatar
           <select id="avatarMode">
             <option value="off">Off</option>
@@ -174,7 +173,11 @@
             <option value="full">Full screen, instead of me</option>
           </select>
         </label>
-        <div id="avatars" class="presets"></div>
+        <button id="hearVoice" class="btn secondary wide" type="button" disabled>Hear their voice</button>
+        <h3>Make an avatar video</h3>
+        <label>Script <textarea id="avatarScript" rows="6" placeholder="Hey everyone! Today I'm testing the new PlayStation, and honestly it's wild."></textarea></label>
+        <button id="speak" class="btn primary wide" type="button" disabled>Make avatar video</button>
+        <p class="hint">The avatar reads your script in their own voice, then murmurcut adds captions and b-roll as usual. Voices are English. The first time downloads the voice model (about 90 MB); recording takes a few seconds per sentence.</p>
       </div>
 
       <div role="tabpanel" id="tab-cuts" aria-labelledby="t-cuts" class="pane" hidden>
