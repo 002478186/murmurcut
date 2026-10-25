@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Headless caption renderer: the editor's own caption styles drawn on a transparent canvas, one PNG per frame,
+     so an outside edit (ffmpeg) can lay murmurcut captions over a video. Driven by a script through window.mm. -->
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Serif:ital@0;1&family=Noto+Sans+Devanagari:wght@400;700&display=swap">
+<body style="margin:0;background:transparent">
+<canvas id="c"></canvas>
+<script type="module">
+import { PRESETS, drawCaption } from './render.js';
+import { alignScript, groupWords } from './captions.js';
+
+const c = document.getElementById('c'), ctx = c.getContext('2d');
+let lines = [], preset, opts;
+
+window.mm = {
+  // pieces: [{script, words: [{text, start, end}]}]; each piece's script takes that piece's Whisper timing.
+  async setup({ pieces, preset: key = 'spotlight', W = 1080, H = 1920, size = 6, pos = 72, upper = true }) {
+    c.width = W; c.height = H;
+    preset = PRESETS[key]; opts = { size, pos, upper };
+    lines = groupWords(pieces.flatMap(p => alignScript(p.script, p.words)));
+    await Promise.all(['40px Anton', '700 40px "Bricolage Grotesque"', 'italic 40px "Instrument Serif"', '40px "Noto Sans Devanagari"'].map(f => document.fonts.load(f)));
+    return lines.length;
+  },
+  // PNG data URL of the captions at time t, or '' when no caption is showing.
+  frame(t) {
+    ctx.clearRect(0, 0, c.width, c.height);
+    const li = lines.findIndex(l => t >= l.start && t < l.end);
+    if (li < 0) return '';
+    drawCaption(ctx, c.width, c.height, lines[li], t, preset, { ...opts, index: li });
+    return c.toDataURL('image/png');
+  },
+};
+</script>
