@@ -6,7 +6,9 @@ import { parseCommand, CHAT_EXAMPLES } from './chat.js';
 
 const $ = id => document.getElementById(id);
 const video = $('video'), canvas = $('canvas'), ctx = canvas.getContext('2d');
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+const newWorker = () => new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+const worker = newWorker();
+const phone = /iPhone|iPod/.test(navigator.userAgent);
 const PX = 60; // timeline pixels per second
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -141,8 +143,32 @@ $('transcribe').onclick = async () => {
   $('progress').hidden = false;
   $('progress').removeAttribute('value');
   const language = $('lang').value;
-  worker.postMessage({ audio, language, model: $('model').value, translate: language !== 'english' && $('capLang').value === 'english' }, [audio.buffer]);
+  const msg = { language, model: $('model').value, translate: language !== 'english' && $('capLang').value === 'english' };
+  if (phone) return worker.onmessage({ data: await transcribeInPieces(audio, msg) });
+  worker.postMessage({ audio, ...msg }, [audio.buffer]);
 };
+
+// iPhone: each 30 s piece runs in a fresh worker that is then closed, so memory stays at one piece's worth
+// however long the video is (Safari reloads the page once a tab passes its memory limit).
+// shortcut: a word spoken across a piece boundary can be cut in two; fine for captions you can edit.
+async function transcribeInPieces(audio, msg) {
+  const P = 16000 * 30, n = Math.ceil(audio.length / P);
+  const out = { type: 'done', chunks: [], segments: msg.translate || msg.language === 'english' ? null : [] };
+  for (let k = 0; k < n; k++) {
+    const piece = audio.slice(k * P, (k + 1) * P), w = newWorker(), at = t => (t == null ? t : t + k * 30);
+    const d = await new Promise(res => {
+      w.onmessage = ({ data }) => (data.type === 'progress' ? ($('progress').value = data.progress / 100) : ['done', 'error'].includes(data.type) && res(data));
+      w.onerror = e => res({ type: 'error', message: e.message || 'The AI worker stopped.' });
+      w.postMessage({ audio: piece, ...msg }, [piece.buffer]);
+      status(`Making captions on your phone, part ${k + 1} of ${n}. Keep this screen open…`);
+    });
+    w.terminate();
+    if (d.type === 'error') return d;
+    out.chunks.push(...d.chunks.map(c => ({ ...c, timestamp: c.timestamp.map(at) })));
+    out.segments?.push(...d.segments.map(s => ({ ...s, start: at(s.start), end: at(s.end) })));
+  }
+  return out;
+}
 
 // Ranking and search-writing requests share the worker with transcription; replies are matched by id.
 const pending = new Map();

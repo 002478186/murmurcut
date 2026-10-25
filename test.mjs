@@ -170,3 +170,14 @@ assert.deepEqual(planBroll([10, 20, 30].map(s => ({ start: s, end: s + 3, text: 
 assert.notEqual(pickKeyword('ages of 10 and 12, and I never outgrew it. I wanted to know what stars were like,'), 'outgrew');
 
 console.log('ok');
+
+// Sentence timing spread over its words: back to back, longer words get longer, ends where the sentence ends.
+{
+  const { spreadWords } = await import('./captions.js');
+  const w = spreadWords([{ text: ' Hi everyone', timestamp: [1, 2.2] }]);
+  assert.deepEqual(w.map(c => c.text), [' Hi', ' everyone']);
+  assert.equal(w[0].timestamp[0], 1);
+  assert.equal(w[0].timestamp[1], w[1].timestamp[0]);
+  assert.ok(Math.abs(w[1].timestamp[1] - 2.2) < 1e-9);
+  assert.ok(w[1].timestamp[1] - w[1].timestamp[0] > w[0].timestamp[1] - w[0].timestamp[0]);
+}

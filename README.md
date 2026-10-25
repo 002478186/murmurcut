@@ -4,7 +4,7 @@
 
 **▶ Try it: https://002478186.github.io/murmurcut/**
 
-**On iPhone:** open that link in Safari, tap Share, then Add to Home Screen. It opens full screen like an app. iPhones give a browser tab less memory, so the Fast caption model and short clips work best there.
+**On iPhone:** open that link in Safari, tap Share, then Add to Home Screen. It opens full screen like an app. Safari gives a page far less memory on iPhone, so there it uses the smallest caption model (whisper-tiny) 30 seconds at a time. Captions come out rougher than on a computer, Hindi especially; fix them under Fix the words.
 
 Drop in a talking clip and murmurcut does seven things:
 

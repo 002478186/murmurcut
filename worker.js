@@ -1,5 +1,6 @@
 // Runs Whisper off the main thread so the UI stays responsive.
 import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2';
+import { spreadWords } from './captions.js';
 
 const asrs = {};
 const opts = { chunk_length_s: 30, stride_length_s: 5 };
@@ -7,7 +8,8 @@ const progress_callback = p => p.status === 'progress' && self.postMessage({ typ
 
 // WebGPU is roughly 10x faster than the CPU path; fall back when the browser or GPU lacks it.
 // shortcut: iPhones always take the CPU path, since Safari kills a tab that runs out of memory and WebGPU adds to it; revisit when tested on a real iPhone.
-const gpu = () => (/iPhone|iPod/.test(navigator.userAgent) ? null : navigator.gpu?.requestAdapter().catch(() => null));
+const phone = /iPhone|iPod/.test(navigator.userAgent);
+const gpu = () => (phone ? null : navigator.gpu?.requestAdapter().catch(() => null));
 async function load(model) {
   const adapter = await gpu();
   if (adapter) {
@@ -145,14 +147,18 @@ self.onmessage = async ({ data }) => {
   if (data.type === 'suggest') return suggest(data);
   if (data.type === 'dub') return dub(data);
   if (data.type === 'speak') return speakText(data);
-  const { audio, language, model, translate } = data;
+  const { audio, language, translate } = data;
+  // iPhone: whisper-tiny (about 500 MB to run, against 850 MB for base) and sentence timestamps spread over
+  // the words, so the tab stays within Safari's memory limit. Fewer words come out right, Hindi especially.
+  const model = phone ? 'Xenova/whisper-tiny' : data.model;
   try {
     await free('asr'); // e.g. Kokoro, after it spoke an avatar's script
     asrs[model] ??= await load(model);
     const { asr, gpu } = asrs[model];
     const on = gpu ? 'on your GPU' : 'on your CPU, which is slow: a minute of video can take several minutes';
     self.postMessage({ type: 'status', text: `${translate ? 'Translating to English' : 'Transcribing'} ${on}…` });
-    const out = await asr(audio, { ...opts, return_timestamps: 'word', language, task: translate ? 'translate' : 'transcribe' });
+    const out = await asr(audio, { ...opts, return_timestamps: phone || 'word', language, task: translate ? 'translate' : 'transcribe' });
+    if (phone) out.chunks = spreadWords(out.chunks);
     let segments = null;
     if (!translate && language !== 'english') {
       self.postMessage({ type: 'status', text: 'Working out what you said, to pick b-roll…' });

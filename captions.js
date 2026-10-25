@@ -2,6 +2,18 @@
 
 export const FILLERS = /^(u+m+|u+h+|erm+|hmm+|a+h+|mm+)$/i;
 
+// Whisper sentence chunks -> word chunks, each word getting a share of the sentence's time by its length.
+// Rougher than Whisper's own word timestamps, but those keep attention data for every token, which is
+// more memory than an iPhone tab is allowed.
+export function spreadWords(chunks) {
+  return chunks.flatMap(({ text, timestamp: [s, e] }) => {
+    const ws = text.trim().split(/\s+/).filter(Boolean), total = ws.reduce((n, w) => n + w.length + 1, 0);
+    const span = (e ?? s + 0.4 * ws.length) - s;
+    let t = s;
+    return ws.map(w => { const d = (span * (w.length + 1)) / total, c = { text: ` ${w}`, timestamp: [t, t + d] }; t += d; return c; });
+  });
+}
+
 // Whisper chunks -> [{text, start, end, cut}]
 export function toWords(chunks) {
   return chunks
