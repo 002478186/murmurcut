@@ -14,6 +14,7 @@ const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const SPLIT = 0.45; // share of the frame the b-roll takes on a split screen; the speaker gets the rest
 const MUXER = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/+esm';
+const MP4BOX = 'https://cdn.jsdelivr.net/npm/mp4box@0.5.2/+esm';
 const RNNOISE = 'https://cdn.jsdelivr.net/npm/@shiguredo/rnnoise-wasm@2025.1.5/dist/rnnoise.js';
 const FPS = 30, RATE = 48000;
 
@@ -127,18 +128,14 @@ $('transcribe').onclick = async () => {
   $('transcribe').disabled = true;
   busy(true);
   status('Reading the audio…');
-  const ac = new AudioContext({ sampleRate: 16000 }); // Whisper expects 16 kHz mono
-  let buf;
+  let audio;
   try {
-    buf = await ac.decodeAudioData(await file.arrayBuffer());
-  } catch {
+    [audio] = await decodeAudio(16000); // Whisper expects 16 kHz mono
+  } catch (e) {
     $('transcribe').disabled = false;
     busy(false);
-    return status("Couldn't read the audio track of this video.");
-  } finally {
-    ac.close();
+    return status(`Couldn't read the audio track of this video (${e.message || e.name}).`);
   }
-  const audio = buf.getChannelData(0);
   status('Downloading the speech model. This only happens the first time.');
   $('progress').hidden = false;
   $('progress').removeAttribute('value');
@@ -169,6 +166,63 @@ async function transcribeInPieces(audio, msg) {
   }
   return out;
 }
+
+// The video's sound as one or two channels at `rate` Hz.
+async function decodeAudio(rate) {
+  const ac = new AudioContext({ sampleRate: rate });
+  try {
+    const b = await ac.decodeAudioData(await file.arrayBuffer());
+    return Array.from({ length: Math.min(2, b.numberOfChannels) }, (_, i) => b.getChannelData(i));
+  } catch (e) {
+    // iPhone Safari's decodeAudioData refuses many iPhone videos, so pull the AAC track out and decode it with WebCodecs.
+    if (!self.AudioDecoder) throw e;
+    const { pcm, from } = await demuxAac(await file.arrayBuffer());
+    return pcm.map(c => resample(c, from, rate));
+  } finally {
+    ac.close();
+  }
+}
+
+// shortcut: holds the whole file in memory like decodeAudioData does; stream it in slices if long 4K clips crash.
+async function demuxAac(data) {
+  const { default: MP4Box } = await import(MP4BOX);
+  const mp4 = MP4Box.createFile(), samples = [];
+  let track;
+  mp4.onError = e => { throw new Error(e); };
+  mp4.onReady = info => (track = info.audioTracks.find(t => t.codec.startsWith('mp4a')));
+  mp4.onSamples = (id, user, s) => samples.push(...s);
+  data.fileStart = 0;
+  mp4.appendBuffer(data);
+  mp4.flush();
+  if (!track) throw new Error('no AAC sound track found');
+  mp4.setExtractionOptions(track.id);
+  mp4.start(); // all the data is already in, so every sample arrives before this returns
+  const n = Math.min(2, track.audio.channel_count), parts = [[], []];
+  const dec = new AudioDecoder({
+    output: a => {
+      for (let c = 0; c < n; c++) {
+        const p = new Float32Array(a.numberOfFrames);
+        a.copyTo(p, { planeIndex: c, format: 'f32-planar' });
+        parts[c].push(p);
+      }
+      a.close();
+    },
+    error: () => {}, // flush() rejects with the same error
+  });
+  const { sample_rate: hz, channel_count: chs } = track.audio;
+  // mp4box can't read iPhone .MOV sound settings (QuickTime v1), but iPhones record AAC-LC, whose 2-byte config we can write
+  const esds = mp4.getTrackById(track.id).mdia.minf.stbl.stsd.entries[0].esds, f = AAC_RATES.indexOf(hz);
+  dec.configure({
+    codec: esds ? track.codec : 'mp4a.40.2', sampleRate: hz, numberOfChannels: chs,
+    description: esds ? esds.esd.descs[0].descs[0].data : new Uint8Array([(2 << 3) | (f >> 1), ((f & 1) << 7) | (chs << 3)]),
+  });
+  for (const s of samples) dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: (s.cts * 1e6) / s.timescale, data: s.data }));
+  await dec.flush();
+  dec.close();
+  const join = ps => { const out = new Float32Array(ps.reduce((k, p) => k + p.length, 0)); let o = 0; for (const p of ps) out.set(p, (o += p.length) - p.length); return out; };
+  return { pcm: parts.slice(0, n).map(join), from: hz };
+}
+const AAC_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
 
 // Ranking and search-writing requests share the worker with transcription; replies are matched by id.
 const pending = new Map();
@@ -903,8 +957,7 @@ function avatarAmp(t) {
     envLoading = true;
     (async () => {
       if (dubTrack) return envelope(dubTrack.pcm, dubTrack.rate);
-      const ac = new AudioContext({ sampleRate: 16000 });
-      try { return envelope((await ac.decodeAudioData(await file.arrayBuffer())).getChannelData(0), 16000); } finally { ac.close(); }
+      return envelope((await decodeAudio(16000))[0], 16000);
     })().then(e => (avatarEnv = e), () => (avatarEnv = new Float32Array(0))).finally(() => (envLoading = false));
   }
   return avatarEnv?.[Math.floor(t * 30)] ?? 0;
@@ -1111,14 +1164,7 @@ async function denoise(channels) {
 
 // The export's soundtrack: decoded at 48 kHz, cleaned, cut like the video, levelled, as two channels.
 async function renderAudio() {
-  const ac = new AudioContext({ sampleRate: RATE });
-  let buf;
-  try {
-    buf = await ac.decodeAudioData(await file.arrayBuffer());
-  } finally {
-    ac.close();
-  }
-  let ch = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, i) => buf.getChannelData(i));
+  let ch = await decodeAudio(RATE);
   if (dubTrack) {
     const d = resample(dubTrack.pcm, dubTrack.rate, RATE), keep = $('dubKeep').checked ? 0.15 : 0;
     ch = [ch[0].map((v, i) => v * keep + (d[i] ?? 0))];
