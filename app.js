@@ -638,6 +638,12 @@ for (const id of ['aiSearch', 'pexelsKey', 'unsplashKey']) {
     try { localStorage.setItem(`murmurcut.${id}`, e.type === 'checkbox' ? (e.checked ? '1' : '0') : e.value.trim()); } catch {}
   });
 }
+// The search-writing model is too big for a phone: the iPhone app's log showed iOS killing the page while it loaded.
+if (phone) {
+  $('aiSearch').checked = false;
+  $('aiSearch').disabled = true;
+  $('aiSearch').closest('label').nextElementSibling.textContent = 'Not on iPhone: the AI model is too big for a phone, so photo searches use keywords from what you said. Use a computer for AI searches.';
+}
 
 // --- timeline ---
 function block(start, end, text, onclick, cls = 'block') {
