@@ -26,7 +26,7 @@ enum Captions {
             let size = (try? video.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             DebugLog.add("captions: got \(size >> 20) MB .\(ext), language \(lang)")
             let words = try await transcribe(video, language: lang)
-            DebugLog.add("captions: done, \(words.count) words")
+            DebugLog.add("captions: done, \(words.count) words, \(words.first?.timestamp[0] ?? 0)s to \(words.last?.timestamp[1] ?? 0)s:\(words.map(\.text).joined())")
             reply = ["type": "done", "chunks": words.map { ["text": $0.text, "timestamp": $0.timestamp] }]
         } catch {
             DebugLog.add("captions: failed: \(error)")
@@ -40,6 +40,11 @@ enum Captions {
         _ = await withCheckedContinuation { done in SFSpeechRecognizer.requestAuthorization { done.resume(returning: $0) } }
         let audio = try await soundOnly(video)
         defer { try? FileManager.default.removeItem(at: audio) }
+        // The last captioned sound stays in Documents next to the log, so a bad transcript can be checked against it.
+        let keep = DebugLog.url.deletingLastPathComponent().appendingPathComponent("last-captions.m4a")
+        try? FileManager.default.removeItem(at: keep)
+        try? FileManager.default.copyItem(at: audio, to: keep)
+        DebugLog.add("captions: sound is \(Int(AVURLAsset(url: audio).duration.seconds))s")
         let ids = (locales[language] ?? []).map(Locale.init(identifier:))
         // SpeechTranscriber is the newer, better model; DictationTranscriber covers more languages (Hindi among them).
         for id in ids {
