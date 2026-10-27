@@ -22,7 +22,16 @@ let zooms = []; // manual zooms: { start, end, amount }
 let heard = []; // Whisper's words as heard, kept so "Use my script" can be re-applied after edits
 let green = false, file, topic = null, topicInfo = null, genericPool = null, lines = [], brolls = [], cuts = [], preset = 'spotlight', exporting = false, audioDest;
 
-const status = text => ($('status').textContent = text);
+// A message ending in "…" means work is under way: the preview shows it with a spinner until a final message replaces it.
+const status = text => {
+  const was = !$('working').hidden, now = text.endsWith('…');
+  $('status').textContent = $('workingText').textContent = text;
+  $('working').hidden = !now;
+  if (was && !now) {
+    $('status').classList.add('done');
+    setTimeout(() => $('status').classList.remove('done'), 5000);
+  }
+};
 const busy = on => { try { on ? sessionStorage.setItem('busy', '1') : sessionStorage.removeItem('busy'); } catch {} };
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const words = () => lines.flatMap(l => l.words);
@@ -148,7 +157,7 @@ $('transcribe').onclick = async () => {
     busy(false);
     return status(`Couldn't read the audio track of this video (${e.message || e.name}).`);
   }
-  status('Downloading the speech model. This only happens the first time.');
+  status('Downloading the speech model. This only happens the first time…');
   $('progress').hidden = false;
   $('progress').removeAttribute('value');
   const language = $('lang').value;
@@ -1099,16 +1108,29 @@ function syncClips(t, playing) {
   }
 }
 
+let drawnAt = 0, perf = { ms: 0, n: 0, at: 0 };
 function frame(now) {
-  // The exporter owns the canvas and every video's position while it renders.
-  if (video.readyState >= 2 && !exporting) {
+  // The exporter owns the canvas and every video's position while it renders. Paused, a few redraws a second are plenty
+  // to show edits, and leave the phone free for the work running alongside.
+  if (video.readyState >= 2 && !exporting && (!video.paused || now - drawnAt > 200)) {
+    drawnAt = now;
     if (!video.paused) {
       const to = skipCut(video.currentTime, cuts);
       if (to !== video.currentTime) video.currentTime = Math.min(to, video.duration);
     }
     const t = video.currentTime;
     syncClips(t, !video.paused);
-    const li = drawFrame(t);
+    const t0 = performance.now(), li = drawFrame(t);
+    // The iPhone app logs drawing speed while playing (ios/Sources/DebugLog.swift), to find what slows playback.
+    if (window.murmurcutApp && !video.paused) {
+      perf.ms += performance.now() - t0;
+      perf.n++;
+      if (now - perf.at > 5000) {
+        const q = video.getVideoPlaybackQuality?.();
+        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}`);
+        perf = { ms: 0, n: 0, at: now };
+      }
+    }
     $('playhead').style.left = `${t * PX}px`;
     $('time').textContent = `${fmt(t)} / ${fmt(video.duration)}`;
     if (!video.paused) {
@@ -1313,6 +1335,6 @@ async function exportRealtime() {
   await new Promise(r => video.addEventListener('seeked', r, { once: true }));
   video.addEventListener('ended', () => rec.stop(), { once: true });
   rec.start(1000);
-  status('Exporting in real time. Keep this tab open and visible.');
+  status('Exporting in real time. Keep this tab open and visible…');
   await video.play();
 }

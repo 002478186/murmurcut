@@ -27,7 +27,7 @@ enum DebugLog {
     static let pageScript = """
     (() => {
       const send = (kind, msg) => { try { webkit.messageHandlers.log.postMessage(kind + ': ' + String(msg).slice(0, 2000)); } catch {} };
-      for (const k of ['error', 'warn']) { const f = console[k]; console[k] = (...a) => { send(k, a.map(x => x?.stack || x).join(' ')); f.apply(console, a); }; }
+      for (const k of ['error', 'warn', 'info']) { const f = console[k]; console[k] = (...a) => { send(k, a.map(x => x?.stack || x).join(' ')); f.apply(console, a); }; }
       addEventListener('error', e => send('error', `${e.message} at ${e.filename}:${e.lineno}`));
       addEventListener('unhandledrejection', e => send('rejection', e.reason?.stack || e.reason));
       addEventListener('click', e => { const b = e.target.closest?.('button'); if (b) send('tap', b.id || b.textContent.trim().slice(0, 40)); }, true);
