@@ -1,0 +1,5 @@
+Web/
+*.xcodeproj/
+build/
+Payload/
+*.ipa

@@ -1,0 +1,38 @@
+# Builds the iPhone app on a GitHub-hosted Mac, since iOS apps can't be built on Windows.
+# Install the unsigned IPA with xtool (see ios/README.md).
+name: iOS
+on:
+  push:
+    paths-ignore: ['README.md', 'DESIGN.md', 'replica/**', 'drivers/**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - name: Bundle the web app
+        run: |
+          mkdir Web
+          cp ../index.html ../style.css ../manifest.json ../icon-*.png ../*.js Web/
+          cp -R ../avatars Web/
+      - run: xcodegen generate
+      - name: Unit tests (simulator)
+        run: |
+          xcodebuild test -project Murmurcut.xcodeproj -scheme Murmurcut \
+            -destination "platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -m1 -o 'iPhone [^(]*' | xargs)"
+      - name: Unsigned device IPA
+        run: |
+          xcodebuild -project Murmurcut.xcodeproj -scheme Murmurcut -configuration Release \
+            -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+          mkdir Payload && cp -R build/Build/Products/Release-iphoneos/Murmurcut.app Payload/
+          zip -qr Murmurcut-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Murmurcut-ipa
+          path: ios/Murmurcut-unsigned.ipa
+          retention-days: 7
