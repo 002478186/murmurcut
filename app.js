@@ -356,6 +356,7 @@ function loadImg(src) {
     i.crossOrigin = 'anonymous'; // keeps the canvas exportable
     i.onload = () => res(i);
     i.onerror = () => rej(new Error('That photo failed to load.'));
+    setTimeout(() => i.complete || rej(new Error('That photo took too long to load.')), 10000);
     i.src = src;
   });
 }
@@ -380,7 +381,7 @@ async function usePick(b) {
 
 async function getJson(url) {
   for (let attempt = 0; ; attempt++) {
-    const r = await fetch(url);
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) }); // a slow source (Openverse can take a minute) mustn't hold up the rest
     if (r.ok) return r.json();
     if (r.status === 429) throw new Error('Too many searches. Wait a minute, then search again.');
     if (r.status < 500 || attempt) throw new Error(`The photo search failed (${r.status}).`);
@@ -1130,7 +1131,7 @@ function frame(now) {
         if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}`);
         perf = { ms: 0, n: 0, at: now };
       }
-    }
+    } else perf.at = 0; // a pause starts a fresh measure, so paused time doesn't count as slow frames
     $('playhead').style.left = `${t * PX}px`;
     $('time').textContent = `${fmt(t)} / ${fmt(video.duration)}`;
     if (!video.paused) {
