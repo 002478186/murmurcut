@@ -1258,7 +1258,11 @@ async function exportOffline(captionsOnly) {
     let failed;
     if (audio) {
       status('Encoding the sound…');
-      const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, m), error: e => (failed = e) });
+      // Safari's AAC encoder wraps its 2-byte config in a whole ES descriptor, which players read as 0 channels; it is
+      // always AAC-LC at RATE in stereo, so write the config ourselves (as demuxAac does).
+      const f = AAC_RATES.indexOf(RATE), asc = new Uint8Array([(2 << 3) | (f >> 1), ((f & 1) << 7) | (2 << 3)]);
+      const fix = m => (acodec.mux === 'aac' && m?.decoderConfig ? { ...m, decoderConfig: { ...m.decoderConfig, description: asc } } : m);
+      const aenc = new AudioEncoder({ output: (c, m) => muxer.addAudioChunk(c, fix(m)), error: e => (failed = e) });
       aenc.configure(acodec.config);
       const len = audio[0].length;
       for (let i = 0; i < len; i += 1024) {

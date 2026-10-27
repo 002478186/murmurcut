@@ -112,9 +112,10 @@ enum Captions {
                 for i in lo..<hi { b[i] = max(-1, min(1, a[i] * gain)) }
             }
         }
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".caf")
+        // Same .m4a format as the first pass: a .caf of the same sound came back timed at half its length.
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
         do { // the file is finished when it closes, at the end of this block
-            let w = try AVAudioFile(forWriting: out, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            let w = try AVAudioFile(forWriting: out, settings: file.fileFormat.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
             try w.write(from: dst)
         }
         return out
@@ -137,6 +138,7 @@ enum Captions {
             return runs
         }
         if let last = try await analyzer.analyzeSequence(from: try AVAudioFile(forReading: audio)) {
+            DebugLog.add("captions: analyzed to \(last.seconds)s")
             try await analyzer.finalizeAndFinish(through: last)
         } else {
             await analyzer.cancelAndFinishNow()
