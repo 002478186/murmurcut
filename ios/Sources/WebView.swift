@@ -14,6 +14,8 @@ struct WebView: UIViewRepresentable {
         config.mediaTypesRequiringUserActionForPlayback = []
         // Tells app.js it can send captioning to Apple's speech recognition (Captions.swift).
         config.userContentController.addUserScript(WKUserScript(source: "window.murmurcutApp = true", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        config.userContentController.addUserScript(WKUserScript(source: DebugLog.pageScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        config.userContentController.add(context.coordinator, name: "log")
         let web = WKWebView(frame: .zero, configuration: config)
         web.isOpaque = false
         web.backgroundColor = .black
@@ -24,8 +26,12 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ web: WKWebView, context: Context) {}
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler {
         private var files: [WKDownload: URL] = [:]
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            DebugLog.add("web \(message.body)")
+        }
 
         func webView(_ web: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
             action.shouldPerformDownload ? .download : .allow
@@ -36,7 +42,10 @@ struct WebView: UIViewRepresentable {
         }
 
         // After the reload the page itself says it ran out of memory (app.js keeps a flag in sessionStorage).
-        func webViewWebContentProcessDidTerminate(_ web: WKWebView) { web.reload() }
+        func webViewWebContentProcessDidTerminate(_ web: WKWebView) {
+            DebugLog.add("iOS killed the web page (usually for memory); reloading")
+            web.reload()
+        }
 
         func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String) async -> URL? {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent(suggestedFilename)

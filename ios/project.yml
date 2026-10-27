@@ -30,6 +30,9 @@ targets:
         NSPhotoLibraryAddUsageDescription: Save your finished videos to Photos.
         NSSpeechRecognitionUsageDescription: Turn what you say into captions, on your phone.
         UILaunchScreen: {}
+        # Shows Documents/murmurcut-log.txt in the Files app, so the user can send it with a bug report.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
   MurmurcutTests:
     type: bundle.unit-test

@@ -23,9 +23,13 @@ enum Captions {
         do {
             try FileManager.default.moveItem(at: body, to: video)
             defer { try? FileManager.default.removeItem(at: video) }
+            let size = (try? video.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            DebugLog.add("captions: got \(size >> 20) MB .\(ext), language \(lang)")
             let words = try await transcribe(video, language: lang)
+            DebugLog.add("captions: done, \(words.count) words")
             reply = ["type": "done", "chunks": words.map { ["text": $0.text, "timestamp": $0.timestamp] }]
         } catch {
+            DebugLog.add("captions: failed: \(error)")
             reply = ["type": "error", "message": error.localizedDescription]
         }
         return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
@@ -56,7 +60,11 @@ enum Captions {
     /// Every timed run of text as (text, start, end), downloading the language model the first time.
     @available(iOS 26, *)
     static func run<S: AsyncSequence>(_ module: any SpeechModule, _ texts: S, _ audio: URL) async throws -> [(String, Double, Double)] where S.Element == AttributedString {
-        if let install = try await AssetInventory.assetInstallationRequest(supporting: [module]) { try await install.downloadAndInstall() }
+        DebugLog.add("captions: using \(type(of: module))")
+        if let install = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
+            DebugLog.add("captions: downloading the language model")
+            try await install.downloadAndInstall()
+        }
         let analyzer = SpeechAnalyzer(modules: [module])
         let collect = Task {
             var runs: [(String, Double, Double)] = []
