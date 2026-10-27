@@ -68,9 +68,10 @@ enum Captions {
         let file = try AVAudioFile(forReading: audio)
         let holes = gaps(in: runs, duration: Double(file.length) / file.processingFormat.sampleRate)
         if !holes.isEmpty, let locale = dictation {
-            let loud = try gapsOnly(file, holes)
-            defer { try? FileManager.default.removeItem(at: loud) }
             let t = dictate(locale)
+            let best = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [t])
+            let loud = try gapsOnly(file, holes, as: best)
+            defer { try? FileManager.default.removeItem(at: loud) }
             let more = try await run(t, t.results.map(\.text), loud).filter { r in holes.contains { r.1 >= $0.0 - 0.5 && r.1 < $0.1 } }
             DebugLog.add("captions: second pass over \(holes.count) gaps (\(Int(holes.reduce(0) { $0 + $1.1 - $1.0 }))s) found:\(more.map(\.0).joined())")
             runs = (runs + more).sorted { $0.1 < $1.1 }
@@ -91,7 +92,8 @@ enum Captions {
 
     /// The sound with everything but the gaps silenced and each gap turned up (up to 20 dB), timed like the original.
     // shortcut: holds the whole sound in memory twice (about 50 MB a minute of stereo); stream it if long videos run out.
-    static func gapsOnly(_ file: AVAudioFile, _ gaps: [(Double, Double)]) throws -> URL {
+    /// Dictation times its words at half speed when it converts the sound itself, so it gets the format it asks for.
+    static func gapsOnly(_ file: AVAudioFile, _ gaps: [(Double, Double)], as target: AVAudioFormat?) throws -> URL {
         let format = file.processingFormat, n = Int(file.length)
         guard let src = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
               let dst = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) else {
@@ -112,11 +114,23 @@ enum Captions {
                 for i in lo..<hi { b[i] = max(-1, min(1, a[i] * gain)) }
             }
         }
-        // Same .m4a format as the first pass: a .caf of the same sound came back timed at half its length.
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
+        var sound = dst
+        if let target, target != format, let convert = AVAudioConverter(from: format, to: target),
+           let conv = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: AVAudioFrameCount(Double(dst.frameLength) * target.sampleRate / format.sampleRate) + 4096) {
+            var fed = false, error: NSError?
+            convert.convert(to: conv, error: &error) { _, status in
+                status.pointee = fed ? .endOfStream : .haveData
+                defer { fed = true }
+                return fed ? nil : dst
+            }
+            if let error { throw error }
+            sound = conv
+        }
+        DebugLog.add("captions: gap sound is \(sound.format)")
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".caf")
         do { // the file is finished when it closes, at the end of this block
-            let w = try AVAudioFile(forWriting: out, settings: file.fileFormat.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
-            try w.write(from: dst)
+            let w = try AVAudioFile(forWriting: out, settings: sound.format.settings, commonFormat: sound.format.commonFormat, interleaved: sound.format.isInterleaved)
+            try w.write(from: sound)
         }
         return out
     }

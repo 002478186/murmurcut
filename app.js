@@ -726,11 +726,12 @@ $('layout').onchange = onLayout;
 const radio = name => document.querySelector(`input[name="${name}"]:checked`).value;
 const setRadio = (name, value) => { const r = document.querySelector(`input[name="${name}"][value="${value}"]`); if (r) r.checked = true; };
 const RATIOS = { '9:16': 9 / 16, '4:5': 4 / 5, '1:1': 1, '16:9': 16 / 9 };
-// Short side 1080 keeps captions and exports sharp on Reels and YouTube; H.264 needs even sizes.
+// Short side 1080 keeps captions and exports sharp on Reels and YouTube; H.264 needs even sizes. A phone previews at
+// half size: copying full 1080p frames 30 times a second starved its video decoder, so playback crawled and froze.
 function sizeCanvas() {
   const r = RATIOS[radio('ratio')] ?? (video.videoWidth ? video.videoWidth / video.videoHeight : 9 / 16); // no picture (an avatar's script): 9:16
-  const even = n => Math.round(n / 2) * 2;
-  [canvas.width, canvas.height] = r <= 1 ? [1080, even(1080 / r)] : [even(1080 * r), 1080];
+  const even = n => Math.round(n / 2) * 2, s = phone && !exporting ? 540 : 1080;
+  [canvas.width, canvas.height] = r <= 1 ? [s, even(s / r)] : [even(s * r), s];
 }
 document.querySelectorAll('input[name="ratio"]').forEach(r => (r.onchange = sizeCanvas));
 
@@ -1109,12 +1110,17 @@ function syncClips(t, playing) {
   }
 }
 
+// Playing, draw once per new video frame (30 a second), not every screen refresh (60): half the copying.
+let fresh = true;
+const onVideoFrame = () => { fresh = true; video.requestVideoFrameCallback?.(onVideoFrame); };
+onVideoFrame();
 let drawnAt = 0, perf = { ms: 0, n: 0, at: 0, prev: 0, worst: 0, wt: 0 };
 function frame(now) {
   // The exporter owns the canvas and every video's position while it renders. Paused, a few redraws a second are plenty
   // to show edits, and leave the phone free for the work running alongside.
-  if (video.readyState >= 2 && !exporting && (!video.paused || now - drawnAt > 200)) {
+  if (video.readyState >= 2 && !exporting && (video.paused ? now - drawnAt > 200 : fresh || !video.requestVideoFrameCallback)) {
     drawnAt = now;
+    fresh = false;
     if (!video.paused) {
       const to = skipCut(video.currentTime, cuts);
       if (to !== video.currentTime) video.currentTime = Math.min(to, video.duration);
@@ -1130,8 +1136,8 @@ function frame(now) {
       perf.prev = now;
       if (now - perf.at > 5000) {
         const q = video.getVideoPlaybackQuality?.();
-        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}, worst ${perf.worst.toFixed(0)} ms at ${perf.wt.toFixed(1)}s`);
-        perf = { ms: 0, n: 0, at: now, prev: now, worst: 0, wt: 0 };
+        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}, worst ${perf.worst.toFixed(0)} ms at ${perf.wt.toFixed(1)}s, plays at ${((t - perf.vt) / ((now - perf.at) / 1000)).toFixed(2)}x`);
+        perf = { ms: 0, n: 0, at: now, prev: now, worst: 0, wt: 0, vt: t };
       }
     } else perf.at = perf.prev = 0; // a pause starts a fresh measure, so paused time doesn't count as slow frames
     $('playhead').style.left = `${t * PX}px`;
@@ -1240,6 +1246,7 @@ async function pickAudioCodec() {
 async function exportOffline(captionsOnly) {
   if (exporting) return;
   exporting = true;
+  sizeCanvas();
   lockButtons(true);
   green = captionsOnly;
   video.pause();
@@ -1305,6 +1312,7 @@ async function exportOffline(captionsOnly) {
   } finally {
     green = false;
     exporting = false;
+    sizeCanvas();
     lockButtons(false);
     seek(resume);
   }
