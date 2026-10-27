@@ -85,6 +85,13 @@ video ──decodeAudioData(16 kHz)──▶ worker.js  Whisper (WebGPU or CPU):
 npm test        # caption logic and the chat-to-edit parser
 ```
 
+`drivers/` holds Puppeteer scripts that drive the app in real Chrome (`cd drivers && npm install` first; serve the app on port 8765 for all but `overlay.mjs`). Each script's first lines give its usage:
+
+- `run.mjs`, `e2e.mjs`: a full edit from import to export, with screenshots
+- `green.mjs`: captions exported on a green background
+- `overlay.mjs`: captions rendered to a transparent video for ffmpeg
+- `audio-fallback.mjs`: makes `decodeAudioData` fail, to test the WebCodecs path iPhone Safari uses
+
 ## Limits
 
 - Export seeks the video once per frame, so it takes about as long as the video on a modest laptop.

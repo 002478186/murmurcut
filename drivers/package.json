@@ -1,0 +1,8 @@
+{
+  "name": "murmurcut-drivers",
+  "private": true,
+  "description": "Puppeteer scripts that drive murmurcut in real Chrome for end-to-end checks and batch renders.",
+  "dependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}
