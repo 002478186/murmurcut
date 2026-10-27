@@ -354,7 +354,7 @@ function loadImg(src) {
   return new Promise((res, rej) => {
     const i = new Image();
     i.crossOrigin = 'anonymous'; // keeps the canvas exportable
-    i.onload = () => res(i);
+    i.onload = () => i.decode().catch(() => {}).then(() => res(i)); // decoded now, not as playback reaches it (a freeze)
     i.onerror = () => rej(new Error('That photo failed to load.'));
     setTimeout(() => i.complete || rej(new Error('That photo took too long to load.')), 10000);
     i.src = src;
@@ -1109,7 +1109,7 @@ function syncClips(t, playing) {
   }
 }
 
-let drawnAt = 0, perf = { ms: 0, n: 0, at: 0 };
+let drawnAt = 0, perf = { ms: 0, n: 0, at: 0, prev: 0, worst: 0, wt: 0 };
 function frame(now) {
   // The exporter owns the canvas and every video's position while it renders. Paused, a few redraws a second are plenty
   // to show edits, and leave the phone free for the work running alongside.
@@ -1126,12 +1126,14 @@ function frame(now) {
     if (window.murmurcutApp && !video.paused) {
       perf.ms += performance.now() - t0;
       perf.n++;
+      if (perf.prev && now - perf.prev > perf.worst) Object.assign(perf, { worst: now - perf.prev, wt: t }); // the longest freeze, and where
+      perf.prev = now;
       if (now - perf.at > 5000) {
         const q = video.getVideoPlaybackQuality?.();
-        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}`);
-        perf = { ms: 0, n: 0, at: now };
+        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}, worst ${perf.worst.toFixed(0)} ms at ${perf.wt.toFixed(1)}s`);
+        perf = { ms: 0, n: 0, at: now, prev: now, worst: 0, wt: 0 };
       }
-    } else perf.at = 0; // a pause starts a fresh measure, so paused time doesn't count as slow frames
+    } else perf.at = perf.prev = 0; // a pause starts a fresh measure, so paused time doesn't count as slow frames
     $('playhead').style.left = `${t * PX}px`;
     $('time').textContent = `${fmt(t)} / ${fmt(video.duration)}`;
     if (!video.paused) {
