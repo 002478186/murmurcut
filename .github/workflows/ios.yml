@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-26 # the iOS 26 SDK, for SpeechAnalyzer
     defaults:
       run:
         working-directory: ios

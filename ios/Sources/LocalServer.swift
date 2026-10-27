@@ -9,6 +9,8 @@ final class LocalServer {
     static let port: NWEndpoint.Port = 8723
 
     let root: URL
+    /// Answers POST requests; the request body arrives as a temporary file.
+    var onPost: ((_ path: String, _ body: URL) async -> Data)?
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "LocalServer")
 
@@ -49,9 +51,46 @@ final class LocalServer {
                 if done || error != nil || buf.count > 65536 { c.cancel() } else { self.readHead(c, buf) }
                 return
             }
-            let reply = self.response(for: String(decoding: buf[..<end.lowerBound], as: UTF8.self))
-            c.send(content: reply, completion: .contentProcessed { _ in c.cancel() })
+            let head = String(decoding: buf[..<end.lowerBound], as: UTF8.self)
+            if head.hasPrefix("POST "), let onPost = self.onPost { return self.post(c, head, Data(buf[end.upperBound...]), onPost) }
+            c.send(content: self.response(for: head), completion: .contentProcessed { _ in c.cancel() })
         }
+    }
+
+    /// Saves the body to a file, then answers with whatever `handler` returns. Captions take minutes, so a space goes out
+    /// every 10 s to keep WebKit from timing out; JSON.parse ignores leading spaces.
+    private func post(_ c: NWConnection, _ head: String, _ first: Data, _ handler: @escaping (String, URL) async -> Data) {
+        let lines = head.components(separatedBy: "\r\n")
+        let path = String(lines[0].split(separator: " ").dropFirst().first ?? "/")
+        let length = lines.first { $0.lowercased().hasPrefix("content-length:") }.flatMap { Int($0.dropFirst(15).trimmingCharacters(in: .whitespaces)) } ?? 0
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        guard FileManager.default.createFile(atPath: file.path, contents: first), let out = try? FileHandle(forWritingTo: file) else { return c.cancel() }
+        out.seekToEndOfFile()
+        var got = first.count
+        func next() {
+            guard got >= length else {
+                return c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, done, error in
+                    if let data { out.write(data); got += data.count }
+                    if (done || error != nil) && got < length { try? out.close(); try? FileManager.default.removeItem(at: file); return c.cancel() }
+                    next()
+                }
+            }
+            try? out.close()
+            c.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n".utf8), completion: .idempotent)
+            Task {
+                let beat = Task {
+                    while true {
+                        try await Task.sleep(nanoseconds: 10_000_000_000)
+                        c.send(content: Data(" ".utf8), completion: .idempotent)
+                    }
+                }
+                let body = await handler(path, file)
+                beat.cancel()
+                try? FileManager.default.removeItem(at: file)
+                c.send(content: body, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
+            }
+        }
+        next()
     }
 
     /// The whole HTTP reply for a request head. Supports single byte ranges, which WebKit asks for on audio and video.

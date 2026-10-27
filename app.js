@@ -127,6 +127,18 @@ try { if (sessionStorage.getItem('busy')) { busy(false); status('Your phone ran 
 $('transcribe').onclick = async () => {
   $('transcribe').disabled = true;
   busy(true);
+  // The iPhone app captions with Apple's on-device speech recognition instead (ios/Sources/Captions.swift); it can't translate.
+  if (window.murmurcutApp && !($('lang').value !== 'english' && $('capLang').value === 'english')) {
+    status('Making captions with Apple speech recognition. The first time, it downloads the language…');
+    $('progress').hidden = false;
+    $('progress').removeAttribute('value');
+    const ext = file.name.split('.').pop() || 'mov';
+    const d = await fetch(`native/transcribe?lang=${$('lang').value}&ext=${encodeURIComponent(ext)}`, { method: 'POST', body: file })
+      .then(r => r.json()).catch(e => ({ type: 'error', message: e.message }));
+    if (d.type === 'done') return worker.onmessage({ data: d });
+    status(`Apple captions didn't work (${d.message}), so using the built-in model…`);
+    await new Promise(r => setTimeout(r, 2500));
+  }
   status('Reading the audio…');
   let audio;
   try {

@@ -18,6 +18,7 @@ struct MurmurcutApp: App {
             .preferredColorScheme(.dark)
             .task {
                 UIApplication.shared.isIdleTimerDisabled = true // captioning and export run for minutes; don't lock mid-way
+                LocalServer.shared.onPost = Captions.handle
                 do { url = try await LocalServer.shared.start() } catch { failure = "Couldn't start murmurcut: \(error.localizedDescription)" }
             }
         }

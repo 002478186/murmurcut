@@ -28,6 +28,7 @@ targets:
         NSCameraUsageDescription: Film a new video to caption.
         NSMicrophoneUsageDescription: Record sound with the video you film.
         NSPhotoLibraryAddUsageDescription: Save your finished videos to Photos.
+        NSSpeechRecognitionUsageDescription: Turn what you say into captions, on your phone.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
   MurmurcutTests:

@@ -12,6 +12,8 @@ struct WebView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
+        // Tells app.js it can send captioning to Apple's speech recognition (Captions.swift).
+        config.userContentController.addUserScript(WKUserScript(source: "window.murmurcutApp = true", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let web = WKWebView(frame: .zero, configuration: config)
         web.isOpaque = false
         web.backgroundColor = .black
