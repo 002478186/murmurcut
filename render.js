@@ -1,5 +1,6 @@
 // Canvas drawing for captions and b-roll. Works on any 2D context, so the style gallery reuses it.
 import { emphasisIndex } from './captions.js';
+const phone = /iPhone|iPod/.test(navigator.userAgent);
 
 const DEVA = '"Noto Sans Devanagari"'; // fallback so Hindi glyphs keep a matching weight
 
@@ -108,7 +109,7 @@ function drawSpotlight(ctx, W, H, ws, texts, t, p, o, s) {
     if (!a) return;
     ctx.save();
     ctx.globalAlpha = a;
-    if (a < 1) ctx.filter = `blur(${(1 - a) * s * 0.25}px)`;
+    if (a < 1 && !phone) ctx.filter = `blur(${(1 - a) * s * 0.25}px)`; // too slow in iPhone Safari; the fade remains
     draw();
     ctx.restore();
   };
@@ -142,6 +143,22 @@ export function drawCover(ctx, src, sw, sh, x, y, w, h, zoom = 1, ay = 0.5) {
   ctx.drawImage(src, x + (w - sw * k) / 2, y + (h - sh * k) * ay, sw * k, sh * k);
 }
 
+// drawCover, blurred by `px` and darkened to `bright`: drawn tiny, then stretched back up. It looks like ctx.filter blur
+// but costs almost nothing; iPhone Safari runs canvas filters on the CPU, and a full-frame one every frame stalled playback.
+const tiny = document.createElement('canvas');
+export function drawBlurred(ctx, src, sw, sh, x, y, w, h, zoom, px, bright) {
+  const k = Math.max(4, px / 2);
+  tiny.width = Math.max(1, Math.round(w / k));
+  tiny.height = Math.max(1, Math.round(h / k));
+  drawCover(tiny.getContext('2d'), src, sw, sh, 0, 0, tiny.width, tiny.height, zoom);
+  ctx.save();
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(tiny, x, y, w, h);
+  ctx.fillStyle = `rgba(0,0,0,${1 - bright})`;
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+}
+
 // A talking character: it leans in and lifts with the loudness of the voice (amp 0..1) and sways a little.
 // Not lip-sync, but it reads as speaking. corner: a round badge top right; full: stands in for the speaker.
 export function drawAvatar(ctx, W, H, src, sw, sh, amp, t, mode) {
@@ -173,10 +190,7 @@ export function drawAvatar(ctx, W, H, src, sw, sh, amp, t, mode) {
 
 // The speaker on the bottom of a split screen: heads sit high in a phone frame, so crop from near the top.
 export function drawSpeaker(ctx, video, x, y, w, h) {
-  ctx.save();
-  ctx.filter = 'blur(24px) brightness(0.7)';
-  drawCover(ctx, video, video.videoWidth, video.videoHeight, x, y, w, h, 1.15);
-  ctx.restore();
+  drawBlurred(ctx, video, video.videoWidth, video.videoHeight, x, y, w, h, 1.15, 24, 0.7);
   drawCover(ctx, video, video.videoWidth, video.videoHeight, x, y, w, h, 1, 0.2);
 }
 
@@ -192,9 +206,7 @@ export function drawBroll(ctx, W, H, item, t, video) {
   ctx.globalAlpha = fade;
   if (item.mode === 'text') {
     // No photo fits, so the words become the visual: the speaker blurred out, the keyword set large.
-    ctx.filter = 'blur(18px) brightness(0.7)';
-    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, 1.1);
-    ctx.filter = 'none';
+    drawBlurred(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, 1.1, 18, 0.7);
     const label = item.label || item.query;
     let s = W * 0.17;
     ctx.font = `italic 400 ${s}px "Instrument Serif", ${DEVA}, serif`;
@@ -234,9 +246,7 @@ export function drawBroll(ctx, W, H, item, t, video) {
     drawCover(ctx, img, iw, ih, -w / 2, -h / 2, w, h);
   } else {
     // blur: the speaker blurred behind the image, the image as a framed square
-    ctx.filter = 'blur(18px) brightness(0.75)';
-    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, 1.1);
-    ctx.filter = 'none';
+    drawBlurred(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, H, 1.1, 18, 0.75);
     const w = W * 0.62, k = 0.92 + 0.08 * Math.min(1, age / 0.25);
     ctx.translate(W / 2, H * 0.4);
     ctx.scale(k, k);

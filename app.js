@@ -1,5 +1,5 @@
 import { toWords, groupWords, editLine, cutRanges, skipCut, toSrt, planBroll, toSegments, pickKeyword, topicOf, isAbstract, cleanQuery, dropCommon, domainOf, alignScript, replaceText, escapeRe, toOutput, toSource, splitClip, clipTime } from './captions.js';
-import { PRESETS, drawCaption, drawBroll, drawCover, drawSpeaker, drawAvatar } from './render.js';
+import { PRESETS, drawCaption, drawBroll, drawCover, drawBlurred, drawSpeaker, drawAvatar } from './render.js';
 import { cutAudio, levelAudio, resample, envelope, placeDub, bedMusic, toWav } from './audio.js';
 import { AVATARS, W3D, H3D, prepare3d, render3d } from './avatar3d.js';
 import { parseCommand, CHAT_EXAMPLES } from './chat.js';
@@ -729,10 +729,7 @@ function drawFramed(W, H, z) {
   const sw = video.videoWidth, sh = video.videoHeight;
   if (!sw) return; // sound only
   if (radio('fit') === 'fit' && Math.abs(sw / sh - W / H) > 0.01) {
-    ctx.save();
-    ctx.filter = 'blur(28px) brightness(0.55)';
-    drawCover(ctx, video, sw, sh, 0, 0, W, H, 1.15);
-    ctx.restore();
+    drawBlurred(ctx, video, sw, sh, 0, 0, W, H, 1.15, 28, 0.55);
     const k = Math.min(W / sw, H / sh) * z;
     ctx.drawImage(video, (W - sw * k) / 2, (H - sh * k) / 2, sw * k, sh * k);
   } else drawCover(ctx, video, sw, sh, 0, 0, W, H, z, +$('anchor').value / 100);
@@ -1070,9 +1067,7 @@ function drawFrame(t) {
     ctx.rect(0, 0, W, top);
     ctx.clip();
     // Between b-roll moments the top shows the speaker blurred, so it is never a black hole.
-    ctx.filter = 'blur(24px) brightness(0.6)';
-    drawCover(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, top, 1.2);
-    ctx.filter = 'none';
+    drawBlurred(ctx, video, video.videoWidth, video.videoHeight, 0, 0, W, top, 1.2, 24, 0.6);
     for (const b of brolls) drawBroll(ctx, W, top, b, t, video);
     ctx.restore();
   } else if (!green) {
@@ -1130,6 +1125,7 @@ function frame(now) {
 fontsReady.then(() => requestAnimationFrame(frame));
 
 $('play').onclick = () => (video.paused ? video.play() : video.pause());
+canvas.onclick = () => $('play').disabled || $('play').click(); // tap the preview to play or pause
 video.onplay = () => ($('play').textContent = 'Pause');
 video.onpause = () => ($('play').textContent = 'Play');
 document.addEventListener('keydown', e => {

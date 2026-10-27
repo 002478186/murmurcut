@@ -167,6 +167,7 @@ progress { position: absolute; left: 30%; bottom: 12px; width: 40%; height: 4px;
 /* ---- timeline ---- */
 .timeline { grid-column: 1 / -1; border-top: 1px solid var(--hairline); background: var(--surface-1); padding: 10px 0 14px; min-width: 0; }
 .transport { display: flex; align-items: center; gap: 14px; padding: 0 16px 10px; }
+.stage .transport { padding: 0; } /* Play sits right under the preview, so phones don't scroll past the settings for it */
 .time { font: 400 13px var(--mono); color: var(--ink-muted); }
 .legend { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--ink-subtle); font-size: 12px; }
 .k { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-left: 8px; }
