@@ -10,6 +10,13 @@ final class CaptionsTests: XCTestCase {
         XCTAssertEqual(w[3].timestamp[1], 3.6, accuracy: 1e-9)
     }
 
+    func testGapsCoverStartMiddleAndEnd() {
+        let g = Captions.gaps(in: [("b", 10, 12), ("a", 0.5, 2), ("c", 13, 14)], duration: 30)
+        XCTAssertEqual(g.map(\.0), [2, 14])
+        XCTAssertEqual(g.map(\.1), [10, 30])
+        XCTAssertEqual(Captions.gaps(in: [], duration: 2).count, 0)
+    }
+
     func testHinglishSpelling() {
         XCTAssertEqual(Captions.latin("नाम"), "naam")
         XCTAssertEqual(Captions.latin("आज"), "aaj")

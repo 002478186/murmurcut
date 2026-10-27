@@ -46,20 +46,78 @@ enum Captions {
         try? FileManager.default.copyItem(at: audio, to: keep)
         DebugLog.add("captions: sound is \(Int(AVURLAsset(url: audio).duration.seconds))s")
         let ids = (locales[language] ?? []).map(Locale.init(identifier:))
+        var dictation: Locale?
+        for id in ids where dictation == nil { dictation = await DictationTranscriber.supportedLocale(equivalentTo: id) }
+        let dictate = { (locale: Locale) in
+            DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [.audioTimeRange])
+        }
         // SpeechTranscriber is the newer, better model; DictationTranscriber covers more languages (Hindi among them).
-        for id in ids {
+        var first: [(String, Double, Double)]?
+        for id in ids where first == nil {
             if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: id) {
                 let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
-                return words(from: try await run(t, t.results.map(\.text), audio), romanize: language == "hindi")
+                first = try await run(t, t.results.map(\.text), audio)
             }
         }
-        for id in ids {
-            if let locale = await DictationTranscriber.supportedLocale(equivalentTo: id) {
-                let t = DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [.audioTimeRange])
-                return words(from: try await run(t, t.results.map(\.text), audio), romanize: language == "hindi")
+        if first == nil, let locale = dictation {
+            let t = dictate(locale)
+            first = try await run(t, t.results.map(\.text), audio)
+        }
+        guard var runs = first else { throw Failure(errorDescription: "Apple has no on-device \(language) captions") }
+        // Quiet or far-off speech gets skipped, so a second pass hears only the gaps, made louder.
+        let file = try AVAudioFile(forReading: audio)
+        let holes = gaps(in: runs, duration: Double(file.length) / file.processingFormat.sampleRate)
+        if !holes.isEmpty, let locale = dictation {
+            let loud = try gapsOnly(file, holes)
+            defer { try? FileManager.default.removeItem(at: loud) }
+            let t = dictate(locale)
+            let more = try await run(t, t.results.map(\.text), loud).filter { r in holes.contains { r.1 >= $0.0 - 0.5 && r.1 < $0.1 } }
+            DebugLog.add("captions: second pass over \(holes.count) gaps (\(Int(holes.reduce(0) { $0 + $1.1 - $1.0 }))s) found:\(more.map(\.0).joined())")
+            runs = (runs + more).sorted { $0.1 < $1.1 }
+        }
+        return words(from: runs, romanize: language == "hindi")
+    }
+
+    /// Stretches of 3 s or more with no captions, from the start to the end of the sound.
+    static func gaps(in runs: [(String, Double, Double)], duration: Double) -> [(Double, Double)] {
+        var out: [(Double, Double)] = [], t = 0.0
+        for r in runs.sorted(by: { $0.1 < $1.1 }) {
+            if r.1 - t >= 3 { out.append((t, r.1)) }
+            t = max(t, r.2)
+        }
+        if duration - t >= 3 { out.append((t, duration)) }
+        return out
+    }
+
+    /// The sound with everything but the gaps silenced and each gap turned up (up to 20 dB), timed like the original.
+    // shortcut: holds the whole sound in memory twice (about 50 MB a minute of stereo); stream it if long videos run out.
+    static func gapsOnly(_ file: AVAudioFile, _ gaps: [(Double, Double)]) throws -> URL {
+        let format = file.processingFormat, n = Int(file.length)
+        guard let src = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
+              let dst = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) else {
+            throw Failure(errorDescription: "Couldn't hold the sound in memory")
+        }
+        file.framePosition = 0
+        try file.read(into: src)
+        dst.frameLength = src.frameLength
+        for c in 0..<Int(format.channelCount) {
+            let a = src.floatChannelData![c], b = dst.floatChannelData![c]
+            b.update(repeating: 0, count: Int(src.frameLength))
+            for (from, to) in gaps {
+                let lo = max(0, Int(from * format.sampleRate)), hi = min(Int(src.frameLength), Int(to * format.sampleRate))
+                guard lo < hi else { continue }
+                var sum: Float = 0
+                for i in lo..<hi { sum += a[i] * a[i] }
+                let gain = min(10, max(1, 0.1 / max((sum / Float(hi - lo)).squareRoot(), 1e-6))) // towards -20 dB loudness
+                for i in lo..<hi { b[i] = max(-1, min(1, a[i] * gain)) }
             }
         }
-        throw Failure(errorDescription: "Apple has no on-device \(language) captions")
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".caf")
+        do { // the file is finished when it closes, at the end of this block
+            let w = try AVAudioFile(forWriting: out, settings: format.settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+            try w.write(from: dst)
+        }
+        return out
     }
 
     /// Every timed run of text as (text, start, end), downloading the language model the first time.
