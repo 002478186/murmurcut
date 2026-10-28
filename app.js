@@ -732,6 +732,33 @@ function sizeCanvas() {
   const r = RATIOS[radio('ratio')] ?? (video.videoWidth ? video.videoWidth / video.videoHeight : 9 / 16); // no picture (an avatar's script): 9:16
   const even = n => Math.round(n / 2) * 2, s = phone && !exporting ? 540 : 1080;
   [canvas.width, canvas.height] = r <= 1 ? [s, even(s / r)] : [even(s * r), s];
+  placeLive();
+}
+
+// On phones the speaker is the <video> itself, under a see-through canvas: copying every frame into the canvas held
+// iPhone playback to half speed. Only when the canvas would show the frame as it is; zooms become a CSS scale.
+const liveBox = $('live');
+let liveOn = false;
+function useLive(W, H) {
+  const on = phone && !exporting && !green && $('layout').value !== 'split' && !!video.videoWidth && Math.abs(video.videoWidth / video.videoHeight - W / H) < 0.01;
+  if (on !== liveOn) {
+    liveOn = on;
+    liveBox.classList.toggle('source', !on);
+    if (on) placeLive(); else liveBox.removeAttribute('style'), video.removeAttribute('style');
+  }
+  return on;
+}
+// The video's box is the canvas's picture area (object-fit: contain), so the two line up exactly.
+function placeLive() {
+  if (!liveOn) return;
+  const v = canvas.parentElement, r = canvas.width / canvas.height, w = Math.min(v.clientWidth, v.clientHeight * r), h = w / r;
+  Object.assign(liveBox.style, { left: `${(v.clientWidth - w) / 2}px`, top: `${(v.clientHeight - h) / 2}px`, width: `${w}px`, height: `${h}px` });
+}
+new ResizeObserver(placeLive).observe(canvas.parentElement);
+// The same push-in drawCover makes: centred across, around the anchor down.
+function zoomLive(z) {
+  const tf = z > 1 ? `scale(${z.toFixed(3)})` : '';
+  if (video.style.transform !== tf) Object.assign(video.style, { transform: tf, transformOrigin: `50% ${$('anchor').value}%` });
 }
 document.querySelectorAll('input[name="ratio"]').forEach(r => (r.onchange = sizeCanvas));
 
@@ -1068,8 +1095,9 @@ function drawFrame(t) {
   // Punch-in: every third line jumps 12% closer, the way editors cut talking heads. Manual zooms ease in and out.
   const z = Math.max($('zoom').checked && li % 3 === 1 ? 1 + 0.12 * Math.min(1, (t - lines[li].start) / 0.12) : 1, zoomAt(t));
   // Captions-on-green export: a flat key colour that any editor can remove to layer the captions over another edit.
+  const live = useLive(W, H);
   ctx.fillStyle = green ? '#00ff00' : '#000';
-  ctx.fillRect(0, 0, W, H);
+  if (live) ctx.clearRect(0, 0, W, H); else ctx.fillRect(0, 0, W, H);
   if (!green && $('layout').value === 'split') {
     const top = Math.round(H * SPLIT);
     drawSpeaker(ctx, video, 0, top, W, H - top);
@@ -1082,7 +1110,7 @@ function drawFrame(t) {
     for (const b of brolls) drawBroll(ctx, W, top, b, t, video);
     ctx.restore();
   } else if (!green) {
-    drawFramed(W, H, z);
+    if (live) zoomLive(z); else drawFramed(W, H, z);
     if (avatarOn('full')) drawAvatar(ctx, W, H, avatar.el, avatar.w, avatar.h, avatarAmp(t), t, 'full');
     for (const b of brolls) drawBroll(ctx, W, H, b, t, video);
   }
@@ -1136,7 +1164,7 @@ function frame(now) {
       perf.prev = now;
       if (now - perf.at > 5000) {
         const q = video.getVideoPlaybackQuality?.();
-        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}, worst ${perf.worst.toFixed(0)} ms at ${perf.wt.toFixed(1)}s, plays at ${((t - perf.vt) / ((now - perf.at) / 1000)).toFixed(2)}x`);
+        if (perf.at) console.info(`perf: ${(perf.ms / perf.n).toFixed(1)} ms per frame, ${(perf.n / ((now - perf.at) / 1000)).toFixed(0)} fps, dropped ${q?.droppedVideoFrames}/${q?.totalVideoFrames}, layout ${$('layout').value}${liveOn ? ' live' : ''}, worst ${perf.worst.toFixed(0)} ms at ${perf.wt.toFixed(1)}s, plays at ${((t - perf.vt) / ((now - perf.at) / 1000)).toFixed(2)}x`);
         perf = { ms: 0, n: 0, at: now, prev: now, worst: 0, wt: 0, vt: t };
       }
     } else perf.at = perf.prev = 0; // a pause starts a fresh measure, so paused time doesn't count as slow frames
