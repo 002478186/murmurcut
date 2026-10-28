@@ -64,15 +64,21 @@ enum Captions {
             first = try await run(t, t.results.map(\.text), audio)
         }
         guard var runs = first else { throw Failure(errorDescription: "Apple has no on-device \(language) captions") }
-        // Quiet or far-off speech gets skipped, so a second pass hears only the gaps, made louder.
+        // Quiet or far-off speech gets skipped, so a second pass hears each gap on its own, made louder, in short pieces
+        // (one long, mostly silent file came back with most of its words missing).
         let file = try AVAudioFile(forReading: audio)
         let holes = gaps(in: runs, duration: Double(file.length) / file.processingFormat.sampleRate)
         if !holes.isEmpty, let locale = dictation {
-            let t = dictate(locale)
-            let best = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [t])
-            let loud = try gapsOnly(file, holes, as: best)
-            defer { try? FileManager.default.removeItem(at: loud) }
-            let more = try await run(t, t.results.map(\.text), loud).filter { r in holes.contains { r.1 >= $0.0 - 0.5 && r.1 < $0.1 } }
+            let best = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [dictate(locale)])
+            var more: [(String, Double, Double)] = []
+            for (from, to) in pieces(of: holes) {
+                let clip = try gapClip(file, from: from, to: to, as: best)
+                defer { try? FileManager.default.removeItem(at: clip) }
+                let t = dictate(locale)
+                let heard = try await run(t, t.results.map(\.text), clip).map { ($0.0, $0.1 + from, $0.2 + from) }
+                DebugLog.add("captions: gap \(String(format: "%.1f-%.1f", from, to)) heard:\(heard.map { String(format: " [%.1f-%.1f]", $0.1, $0.2) + $0.0 }.joined())")
+                more += heard.filter { $0.1 < to }
+            }
             DebugLog.add("captions: second pass over \(holes.count) gaps (\(Int(holes.reduce(0) { $0 + $1.1 - $1.0 }))s) found:\(more.map(\.0).joined())")
             runs = (runs + more).sorted { $0.1 < $1.1 }
         }
@@ -90,43 +96,42 @@ enum Captions {
         return out
     }
 
-    /// The sound with everything but the gaps silenced and each gap turned up (up to 20 dB), timed like the original.
-    // shortcut: holds the whole sound in memory twice (about 50 MB a minute of stereo); stream it if long videos run out.
-    /// Dictation times its words at half speed when it converts the sound itself, so it gets the format it asks for.
-    static func gapsOnly(_ file: AVAudioFile, _ gaps: [(Double, Double)], as target: AVAudioFormat?) throws -> URL {
-        let format = file.processingFormat, n = Int(file.length)
-        guard let src = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)),
-              let dst = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(n)) else {
-            throw Failure(errorDescription: "Couldn't hold the sound in memory")
+    /// Gaps cut into pieces of at most 20 s, so each one is heard fresh.
+    static func pieces(of gaps: [(Double, Double)]) -> [(Double, Double)] {
+        gaps.flatMap { gap -> [(Double, Double)] in
+            let n = max(1, Int(((gap.1 - gap.0) / 20).rounded(.up))), step = (gap.1 - gap.0) / Double(n)
+            return (0..<n).map { (gap.0 + Double($0) * step, gap.0 + Double($0 + 1) * step) }
         }
-        file.framePosition = 0
-        try file.read(into: src)
-        dst.frameLength = src.frameLength
+    }
+
+    /// One stretch of the sound as its own file starting at 0, turned up (up to 20 dB) and in the format Dictation asks for:
+    /// it times its words at half speed when it converts the sound itself.
+    static func gapClip(_ file: AVAudioFile, from: Double, to: Double, as target: AVAudioFormat?) throws -> URL {
+        let format = file.processingFormat
+        let lo = AVAudioFramePosition(from * format.sampleRate), n = AVAudioFrameCount(max(0, min(Double(file.length), to * format.sampleRate) - Double(lo)))
+        guard n > 0, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: n) else { throw Failure(errorDescription: "Couldn't hold the sound in memory") }
+        file.framePosition = lo
+        try file.read(into: buf, frameCount: n)
+        let len = Int(buf.frameLength)
         for c in 0..<Int(format.channelCount) {
-            let a = src.floatChannelData![c], b = dst.floatChannelData![c]
-            b.update(repeating: 0, count: Int(src.frameLength))
-            for (from, to) in gaps {
-                let lo = max(0, Int(from * format.sampleRate)), hi = min(Int(src.frameLength), Int(to * format.sampleRate))
-                guard lo < hi else { continue }
-                var sum: Float = 0
-                for i in lo..<hi { sum += a[i] * a[i] }
-                let gain = min(10, max(1, 0.1 / max((sum / Float(hi - lo)).squareRoot(), 1e-6))) // towards -20 dB loudness
-                for i in lo..<hi { b[i] = max(-1, min(1, a[i] * gain)) }
-            }
+            let a = buf.floatChannelData![c]
+            var sum: Float = 0
+            for i in 0..<len { sum += a[i] * a[i] }
+            let gain = min(10, max(1, 0.1 / max((sum / Float(max(1, len))).squareRoot(), 1e-6))) // towards -20 dB loudness
+            for i in 0..<len { a[i] = max(-1, min(1, a[i] * gain)) }
         }
-        var sound = dst
+        var sound = buf
         if let target, target != format, let convert = AVAudioConverter(from: format, to: target),
-           let conv = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: AVAudioFrameCount(Double(dst.frameLength) * target.sampleRate / format.sampleRate) + 4096) {
+           let conv = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: AVAudioFrameCount(Double(len) * target.sampleRate / format.sampleRate) + 4096) {
             var fed = false, error: NSError?
             convert.convert(to: conv, error: &error) { _, status in
                 status.pointee = fed ? .endOfStream : .haveData
                 defer { fed = true }
-                return fed ? nil : dst
+                return fed ? nil : buf
             }
             if let error { throw error }
             sound = conv
         }
-        DebugLog.add("captions: gap sound is \(sound.format)")
         let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".caf")
         do { // the file is finished when it closes, at the end of this block
             let w = try AVAudioFile(forWriting: out, settings: sound.format.settings, commonFormat: sound.format.commonFormat, interleaved: sound.format.isInterleaved)

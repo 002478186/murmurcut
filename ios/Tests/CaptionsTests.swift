@@ -17,6 +17,13 @@ final class CaptionsTests: XCTestCase {
         XCTAssertEqual(Captions.gaps(in: [], duration: 2).count, 0)
     }
 
+    func testGapPiecesAreAtMost20Seconds() {
+        let p = Captions.pieces(of: [(2, 10), (14, 60)])
+        XCTAssertEqual(p.map(\.0), [2, 14, 29.333333333333336, 44.66666666666667])
+        XCTAssertEqual(p.last?.1, 60)
+        XCTAssertTrue(p.allSatisfy { $0.1 - $0.0 <= 20 })
+    }
+
     func testHinglishSpelling() {
         XCTAssertEqual(Captions.latin("नाम"), "naam")
         XCTAssertEqual(Captions.latin("आज"), "aaj")
