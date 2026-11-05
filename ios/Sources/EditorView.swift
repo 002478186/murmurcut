@@ -5,10 +5,10 @@ import Translation
 
 struct EditorView: View {
     enum Tool: String, CaseIterable {
-        case captions = "Captions", style = "Style", text = "Text", audio = "Audio", edit = "Edit", filters = "Filters", format = "Format"
+        case captions = "Captions", style = "Style", broll = "B-roll", text = "Text", audio = "Audio", edit = "Edit", filters = "Filters", format = "Format"
         var icon: String {
-            ["Captions": "captions.bubble", "Style": "textformat", "Text": "character.textbox", "Audio": "waveform", "Edit": "scissors",
-             "Filters": "camera.filters", "Format": "aspectratio"][rawValue]!
+            ["Captions": "captions.bubble", "Style": "textformat", "B-roll": "photo.on.rectangle.angled", "Text": "character.textbox", "Audio": "waveform",
+             "Edit": "scissors", "Filters": "camera.filters", "Format": "aspectratio"][rawValue]!
         }
     }
     struct WordRef: Identifiable { let id: Int }
@@ -35,6 +35,12 @@ struct EditorView: View {
     @State private var addingClip = false
     @State private var translating: TranslationSession.Configuration?
     @State private var translatingTo = ""
+    @State private var brollNote: String? // progress of Auto B-roll
+    @State private var broll: UUID? // the moment being changed
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var searching: Broll? // the moment getting a new search
+    @AppStorage("giphyKey") private var giphyKey = ""
+    @AppStorage("pexelsKey") private var pexelsKey = ""
 
     static let targets = [("en", "English"), ("hi", "Hindi"), ("es", "Spanish"), ("fr", "French"), ("de", "German"), ("pt", "Portuguese"),
                           ("ar", "Arabic"), ("ja", "Japanese"), ("ko", "Korean"), ("zh", "Chinese")]
@@ -79,6 +85,13 @@ struct EditorView: View {
             }
         }
         .translationTask(translating) { session in await translate(with: session) }
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            Task { await addPhoto(item); pickedPhoto = nil }
+        }
+        .sheet(item: $searching) { b in
+            TextSheet(text: b.query) { q in Task { await research(b.id, query: q) } }
+        }
         .onChange(of: pickedClip) { _, item in
             guard let item else { return }
             Task {
@@ -268,21 +281,24 @@ struct EditorView: View {
     // MARK: Tools
 
     private var toolbar: some View {
-        HStack {
-            ForEach(Tool.allCases, id: \.self) { t in
-                Button { tool = t } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: t.icon).font(.system(size: 20, weight: .semibold))
-                        Text(t.rawValue).font(.caption2.weight(.semibold))
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(Tool.allCases, id: \.self) { t in
+                    Button { tool = t } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: t.icon).font(.system(size: 20, weight: .semibold))
+                            Text(t.rawValue).font(.caption2.weight(.semibold)).lineLimit(1)
+                        }
+                        .frame(minWidth: 54, maxWidth: .infinity, minHeight: 52)
+                        .foregroundStyle(tool == t ? AnyShapeStyle(Theme.brand) : AnyShapeStyle(Theme.muted))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 52)
-                    .foregroundStyle(tool == t ? AnyShapeStyle(Theme.brand) : AnyShapeStyle(Theme.muted))
+                    .buttonStyle(.plain)
+                    .sensoryFeedback(.selection, trigger: tool)
                 }
-                .buttonStyle(.plain)
-                .sensoryFeedback(.selection, trigger: tool)
             }
+            .containerRelativeFrame(.horizontal) { w, _ in max(w, 54 * Double(Tool.allCases.count)) } // fills the bar; scrolls on narrow phones
         }
-        .padding(.horizontal, 8).padding(.top, 6)
+        .padding(.horizontal, 4).padding(.top, 6)
         .background(Theme.surface.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Theme.line.frame(height: 1) }
     }
@@ -292,6 +308,7 @@ struct EditorView: View {
             switch tool {
             case .captions: captionsTool
             case .style: styleTool
+            case .broll: brollTool
             case .text: textTool
             case .audio: audioTool
             case .edit: ScrollView { VStack(alignment: .leading, spacing: 14) { editTool; cutsTool } }
@@ -545,6 +562,107 @@ struct EditorView: View {
             DebugLog.add("captions: translation failed: \(error)")
             failure = "Couldn't translate: \(error.localizedDescription)"
         }
+    }
+
+    @ViewBuilder private var brollTool: some View {
+        HStack {
+            Button(brollNote ?? (project.brolls.isEmpty ? "Auto B-roll" : "Redo B-roll"), systemImage: "sparkles") { Task { await autoBroll() } }
+                .buttonStyle(BrandButton()).controlSize(.small)
+                .disabled(brollNote != nil || project.words.isEmpty)
+            PhotosPicker(selection: $pickedPhoto, matching: .images) { Image(systemName: "photo.badge.plus").font(.title3).frame(width: 44, height: 44) }
+                .accessibilityLabel("Add a photo here")
+        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if project.words.isEmpty {
+                    Text("Make captions first: B-roll is picked from what you say.").font(.footnote).foregroundStyle(Theme.muted)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(project.brolls) { b in
+                            Chip(title: "\(stamp(b.start)) \(b.query)", icon: ["gif": "play.square", "meme": "face.smiling", "text": "textformat"][b.kind] ?? "photo", selected: b.id == broll) {
+                                broll = b.id; seek(b.start + 0.3)
+                            }
+                        }
+                    }
+                }
+                if let i = project.brolls.firstIndex(where: { $0.id == broll }) {
+                    let b = project.brolls[i]
+                    HStack {
+                        ForEach(["full": "Full", "card": "Card", "blur": "Blur"].sorted { $0.key > $1.key }, id: \.key) { k, name in
+                            Chip(title: name, selected: b.mode == k) { change { $0.brolls[i].mode = k } }
+                        }
+                    }
+                    HStack {
+                        Chip(title: "Next", icon: "arrow.right.circle") { Task { await next(b.id) } }.disabled(b.options.count < 2)
+                        Chip(title: "Search", icon: "magnifyingglass") { searching = b }
+                        Chip(title: "Delete", icon: "trash") { broll = nil; change { $0.brolls.remove(at: i) } }
+                    }
+                    HStack {
+                        Chip(title: "Start here", icon: "arrow.right.to.line") { change { $0.brolls[i].start = min(time, $0.brolls[i].end - 0.3) } }
+                        Chip(title: "End here", icon: "arrow.left.to.line") { change { $0.brolls[i].end = max(time, $0.brolls[i].start + 0.3) } }
+                    }
+                    if !b.credit.isEmpty { Text(b.credit).font(.caption2).foregroundStyle(Theme.muted).lineLimit(2) }
+                }
+                DisclosureGroup("GIFs, memes and more photos") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Photos come free from Wikipedia and Wikimedia Commons. For GIFs and memes, paste a free GIPHY key (developers.giphy.com); for more photos, a Pexels key (pexels.com/api).")
+                            .font(.footnote).foregroundStyle(Theme.muted)
+                        TextField("GIPHY key", text: $giphyKey).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                        TextField("Pexels key", text: $pexelsKey).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                    .padding(.top, 6)
+                }
+                .font(.subheadline.bold())
+            }
+        }
+    }
+
+    /// Reads every sentence, picks the moments worth a visual, then finds and downloads a picture for each.
+    private func autoBroll() async {
+        brollNote = "Reading your sentences…"
+        defer { brollNote = nil }
+        let keepOwn = project.brolls.filter { $0.credit == "Your photo" }
+        var moments = await BRoll.plan(project)
+        DebugLog.add("broll: \(moments.count) moments: \(moments.map(\.query).joined(separator: ", "))")
+        for i in moments.indices {
+            brollNote = "Finding pictures \(i + 1) of \(moments.count)…"
+            moments[i].options = await BRoll.search(moments[i].query, kind: moments[i].kind)
+            moments[i] = await BRoll.fetch(moments[i], into: project.folder)
+        }
+        for old in project.brolls where !keepOwn.contains(old) { if let f = old.file { try? FileManager.default.removeItem(at: project.folder.appendingPathComponent(f)) } }
+        change { $0.brolls = (keepOwn + moments).sorted { $0.start < $1.start } }
+        broll = nil
+        if moments.isEmpty { failure = "Nothing in this video needed a picture. Add your own with the photo button." }
+    }
+
+    private func next(_ id: UUID) async {
+        guard var b = project.brolls.first(where: { $0.id == id }) else { return }
+        b.pick = (b.pick + 1) % max(1, b.options.count)
+        let got = await BRoll.fetch(b, into: project.folder)
+        change { p in if let i = p.brolls.firstIndex(where: { $0.id == id }) { p.brolls[i] = got } }
+    }
+
+    private func research(_ id: UUID, query: String) async {
+        guard var b = project.brolls.first(where: { $0.id == id }) else { return }
+        brollNote = "Searching…"
+        defer { brollNote = nil }
+        b.query = query; b.pick = 0
+        b.options = await BRoll.search(query, kind: b.kind == "text" ? "photo" : b.kind)
+        let got = await BRoll.fetch(b, into: project.folder)
+        change { p in if let i = p.brolls.firstIndex(where: { $0.id == id }) { p.brolls[i] = got } }
+        if got.file == nil { failure = "Nothing was found for \"\(query)\"." }
+    }
+
+    /// One of your own photos at the playhead, for three seconds.
+    private func addPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.85) else { return }
+        var b = Broll(start: time, end: min(project.outputDuration, time + 3), query: "photo", mode: "full")
+        b.file = "broll-\(b.id.uuidString.prefix(8)).jpg"
+        b.credit = "Your photo"
+        guard (try? jpeg.write(to: project.folder.appendingPathComponent(b.file!))) != nil else { return }
+        change { $0.brolls = ($0.brolls + [b]).sorted { $0.start < $1.start } }
+        broll = b.id
     }
 
     private func move(_ i: Int, by step: Int) {

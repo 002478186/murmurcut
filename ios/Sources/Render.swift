@@ -218,17 +218,21 @@ final class Compositor: NSObject, AVVideoCompositing {
             return request.finish(with: NSError(domain: "murmurcut", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video frame"]))
         }
         let t = request.compositionTime.seconds, s = ins.scene, R = s.renderSize
-        let image = Self.place(CIImage(cvPixelBuffer: frame), orientation: s.orientations[track] ?? .up, scene: s, zoom: s.zoom(at: t), transition: s.transition(at: t))
+        var image = Self.place(CIImage(cvPixelBuffer: frame), orientation: s.orientations[track] ?? .up, scene: s, zoom: s.zoom(at: t), transition: s.transition(at: t))
+        let broll = s.project.brolls.first { t >= $0.start && t < $0.end }
+        if let broll { image = BRoll.draw(broll, over: image, at: t, folder: s.project.folder, size: R) }
         Self.context.render(image, to: out, bounds: CGRect(origin: .zero, size: R), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
         let line = s.lines.last(where: { $0.start <= t + 0.05 && t < $0.end + 0.25 }), texts = s.project.texts.filter { t >= $0.start && t < $0.end }
-        if line != nil || !texts.isEmpty {
+        // A text card (no picture found) shows its keyword large over the blurred video.
+        let card = broll.flatMap { $0.file == nil ? Overlay(text: $0.query.capitalized, start: $0.start, end: $0.end, y: 0.4, size: 2, preset: "Editorial") : nil }
+        if line != nil || !texts.isEmpty || card != nil {
             CVPixelBufferLockBaseAddress(out, [])
             if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(out), width: Int(R.width), height: Int(R.height), bitsPerComponent: 8,
                                    bytesPerRow: CVPixelBufferGetBytesPerRow(out), space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                    bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
                 ctx.translateBy(x: 0, y: R.height); ctx.scaleBy(x: 1, y: -1)
                 if let line { Captioner.draw(line, at: t, preset: s.preset, project: s.project, in: ctx, size: R) }
-                for o in texts { Captioner.draw(o, at: t, project: s.project, in: ctx, size: R) }
+                for o in texts + (card.map { [$0] } ?? []) { Captioner.draw(o, at: t, project: s.project, in: ctx, size: R) }
             }
             CVPixelBufferUnlockBaseAddress(out, [])
         }

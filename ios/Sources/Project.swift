@@ -31,6 +31,20 @@ struct Overlay: Codable, Hashable, Identifiable {
     var accent = 2
 }
 
+/// A picture, GIF or meme shown over the video while a sentence is said.
+struct Broll: Codable, Hashable, Identifiable {
+    struct Found: Codable, Hashable { var url: String; var credit: String; var gif = false }
+    var id = UUID()
+    var start, end: Double // on the output timeline
+    var query: String
+    var kind = "photo" // photo, gif, meme, or text when nothing was found
+    var mode = "full" // full, card, blur
+    var file: String? // in the project folder
+    var credit = ""
+    var options: [Found] = [] // what the search found, for Next
+    var pick = 0
+}
+
 enum Aspect: String, Codable, CaseIterable {
     case original = "Original", vertical = "9:16", portrait = "4:5", square = "1:1", wide = "16:9"
     var ratio: Double? { ["9:16": 9 / 16, "4:5": 4 / 5, "1:1": 1, "16:9": 16 / 9][rawValue] }
@@ -82,6 +96,7 @@ struct Project: Codable, Identifiable, Hashable {
     var duck = true // music dips while someone talks
     // Text and export
     var texts: [Overlay] = []
+    var brolls: [Broll] = []
     var quality = 1080 // the short side of the export, in pixels
     var transition = "None" // between clips
     var transitionOnCuts = false // and at every jump cut
@@ -170,6 +185,18 @@ extension Project {
             defer { t += d }
             return Word(text: p, start: t, end: t + d)
         }
+    }
+
+    /// B-roll moments from scored sentences (output start, end, query, kind, score): the best first, each at least `gap`
+    /// seconds from the next and none repeating a query, so the speaker stays on screen between them.
+    static func moments(_ cands: [(Double, Double, String, String, Int)], gap: Double = 2.5, length: Double = 2.5) -> [Broll] {
+        var picked: [Broll] = []
+        for c in cands.sorted(by: { $0.4 > $1.4 }) where c.4 >= 5 && c.0 >= 1 && c.1 - c.0 >= 0.8 {
+            let b = Broll(start: c.0 + 0.15, end: min(c.1, c.0 + 0.15 + length), query: c.2, kind: c.3)
+            if picked.allSatisfy({ (b.start >= $0.end + gap || b.end + gap <= $0.start) && $0.query.lowercased() != b.query.lowercased() }) { picked.append(b) }
+        }
+        let modes = ["full", "card", "blur"]
+        return picked.sorted { $0.start < $1.start }.enumerated().map { i, b in var b = b; b.mode = b.kind == "photo" ? modes[i % 3] : "card"; return b }
     }
 
     /// Where each clip starts on the source timeline.

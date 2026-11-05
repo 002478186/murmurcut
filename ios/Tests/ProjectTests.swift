@@ -102,4 +102,12 @@ final class ProjectTests: XCTestCase {
         p.translation = t; p.showTranslation = true
         XCTAssertEqual(p.lines(maxWords: 4).first?.words.map(\.text), ["Hola", "amigo"])
     }
+
+    func testBrollMomentsAreSpacedAndDistinct() {
+        let m = Project.moments([(2, 5, "brass key", "photo", 9), (3, 6, "key", "gif", 8), (8, 11, "Walmart", "photo", 6),
+                                 (10, 12, "brass key", "photo", 7), (12, 14, "thank you", "meme", 4), (0.2, 3, "intro", "photo", 10)])
+        XCTAssertEqual(m.map(\.query), ["brass key", "Walmart"]) // "key" too close, the repeat dropped, score 4 and the first second skipped
+        XCTAssertEqual(m[0].start, 2.15, accuracy: 1e-9)
+        XCTAssertEqual(m.map(\.mode), ["full", "card"])
+    }
 }

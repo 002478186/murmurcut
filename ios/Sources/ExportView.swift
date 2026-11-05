@@ -33,6 +33,11 @@ struct ExportView: View {
             if let file {
                 ShareLink(item: file) { Label("Share video", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
                     .buttonStyle(BrandButton())
+                let credits = project.brolls.map(\.credit).filter { !$0.isEmpty && $0 != "Your photo" }
+                if !credits.isEmpty {
+                    ShareLink(item: credits.joined(separator: "\n")) { Label("B-roll credits", systemImage: "text.quote").frame(maxWidth: .infinity, minHeight: 50) }
+                        .font(.headline).background(Theme.raised, in: .capsule).buttonStyle(.plain)
+                }
                 if !project.words.isEmpty {
                     ShareLink(item: srt()) { Label("Captions file (.srt)", systemImage: "captions.bubble").frame(maxWidth: .infinity, minHeight: 50) }
                         .font(.headline).background(Theme.raised, in: .capsule).buttonStyle(.plain)
