@@ -1,88 +1,102 @@
 import AVFoundation
 import Speech
 
-/// Captions from Apple's on-device speech recognition, so the phone doesn't run Whisper inside the web page (which is what
-/// runs it out of memory). Answers POST /native/transcribe?lang=hindi&ext=mov with the same JSON the Whisper worker sends.
+/// Captions from Apple's on-device speech recognition: every spoken word with its start and end in seconds.
 enum Captions {
-    struct Word: Encodable, Equatable { let text: String; let timestamp: [Double] }
     struct Failure: LocalizedError { let errorDescription: String? }
 
-    // The web app's language names -> locales to try, best first.
+    // Language names -> locales to try, best first.
     static let locales = [
         "english": ["en-IN", "en-US", "en-GB"], "hindi": ["hi-IN"], "spanish": ["es-ES", "es-MX"], "french": ["fr-FR"],
         "german": ["de-DE"], "portuguese": ["pt-BR", "pt-PT"], "italian": ["it-IT"], "japanese": ["ja-JP"], "korean": ["ko-KR"],
         "chinese": ["zh-CN"], "arabic": ["ar-SA"], "russian": ["ru-RU"], "urdu": ["ur-PK", "ur-IN"], "bengali": ["bn-IN", "bn-BD"],
     ]
 
-    static func handle(path: String, body: URL) async -> Data {
-        let query = URLComponents(string: path)?.queryItems ?? []
-        let lang = query.first { $0.name == "lang" }?.value ?? "english"
-        let ext = query.first { $0.name == "ext" }?.value ?? "mov"
-        let video = body.appendingPathExtension(ext) // AVFoundation goes by the extension
-        let reply: [String: Any]
-        do {
-            try FileManager.default.moveItem(at: body, to: video)
-            defer { try? FileManager.default.removeItem(at: video) }
-            let size = (try? video.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            DebugLog.add("captions: got \(size >> 20) MB .\(ext), language \(lang)")
-            let words = try await transcribe(video, language: lang)
-            DebugLog.add("captions: done, \(words.count) words, \(words.first?.timestamp[0] ?? 0)s to \(words.last?.timestamp[1] ?? 0)s:\(words.map(\.text).joined())")
-            reply = ["type": "done", "chunks": words.map { ["text": $0.text, "timestamp": $0.timestamp] }]
-        } catch {
-            DebugLog.add("captions: failed: \(error)")
-            reply = ["type": "error", "message": error.localizedDescription]
-        }
-        return (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
-    }
+    /// Language codes -> our names, for "auto".
+    static let codes = ["en": "english", "hi": "hindi", "es": "spanish", "fr": "french", "de": "german", "pt": "portuguese", "it": "italian",
+                        "ja": "japanese", "ko": "korean", "zh": "chinese", "ar": "arabic", "ru": "russian", "ur": "urdu", "bn": "bengali"]
 
-    static func transcribe(_ video: URL, language: String) async throws -> [Word] {
-        guard #available(iOS 26, *) else { throw Failure(errorDescription: "Apple captions need iOS 26") }
+    /// The words, and the language they were heard in ("auto" picks one).
+    static func transcribe(_ video: URL, language: String) async throws -> (words: [Word], language: String) {
         _ = await withCheckedContinuation { done in SFSpeechRecognizer.requestAuthorization { done.resume(returning: $0) } }
         let audio = try await soundOnly(video)
         defer { try? FileManager.default.removeItem(at: audio) }
+        let language = language == "auto" ? try await detect(audio) : language
         // The last captioned sound stays in Documents next to the log, so a bad transcript can be checked against it.
         let keep = DebugLog.url.deletingLastPathComponent().appendingPathComponent("last-captions.m4a")
         try? FileManager.default.removeItem(at: keep)
         try? FileManager.default.copyItem(at: audio, to: keep)
         DebugLog.add("captions: sound is \(Int(AVURLAsset(url: audio).duration.seconds))s")
         let ids = (locales[language] ?? []).map(Locale.init(identifier:))
-        var dictation: Locale?
+        var speech: Locale?, dictation: Locale?
+        for id in ids where speech == nil { speech = await SpeechTranscriber.supportedLocale(equivalentTo: id) }
         for id in ids where dictation == nil { dictation = await DictationTranscriber.supportedLocale(equivalentTo: id) }
-        let dictate = { (locale: Locale) in
-            DictationTranscriber(locale: locale, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [.audioTimeRange])
+        // SpeechTranscriber is the newer, better model (and writes Hindi in Latin letters, as Hinglish); DictationTranscriber
+        // covers more languages. Both passes use the best one there is.
+        let speechModule = speech.map { l in { SpeechTranscriber(locale: l, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange]) } }
+        let dictationModule = dictation.map { l in { DictationTranscriber(locale: l, contentHints: [], transcriptionOptions: [.punctuation], reportingOptions: [], attributeOptions: [.audioTimeRange]) } }
+        func hear(_ url: URL, speech: Bool) async throws -> [(String, Double, Double)] {
+            if speech, let make = speechModule { let t = make(); return try await run(t, t.results.map(\.text), url).map { ($0.0, $0.1, $0.2) } }
+            if let make = dictationModule { let t = make(); return try await run(t, t.results.map(\.text), url).map { ($0.0, $0.1, $0.2) } }
+            return []
         }
-        // SpeechTranscriber is the newer, better model; DictationTranscriber covers more languages (Hindi among them).
-        var first: [(String, Double, Double)]?
-        for id in ids where first == nil {
-            if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: id) {
-                let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
-                first = try await run(t, t.results.map(\.text), audio)
-            }
-        }
-        if first == nil, let locale = dictation {
-            let t = dictate(locale)
-            first = try await run(t, t.results.map(\.text), audio)
-        }
-        guard var runs = first else { throw Failure(errorDescription: "Apple has no on-device \(language) captions") }
-        // Quiet or far-off speech gets skipped, so a second pass hears each gap on its own, made louder, in short pieces
-        // (one long, mostly silent file came back with most of its words missing).
+        guard speechModule != nil || dictationModule != nil else { throw Failure(errorDescription: "Apple has no on-device \(language) captions") }
+        // Heard as a whole, a long file comes back with most of its words missing (quiet or far-off speech gets skipped), so
+        // it is heard in short pieces, each made louder: first with the better model, then whatever stays silent with
+        // Dictation, which hears more but writes Hindi in Devanagari.
+        var runs: [(String, Double, Double)] = []
         let file = try AVAudioFile(forReading: audio)
-        let holes = gaps(in: runs, duration: Double(file.length) / file.processingFormat.sampleRate)
-        if !holes.isEmpty, let locale = dictation {
-            let best = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [dictate(locale)])
+        for useSpeech in [true, false] where useSpeech ? speechModule != nil : dictationModule != nil {
+            let holes = gaps(in: runs, duration: Double(file.length) / file.processingFormat.sampleRate)
+            if holes.isEmpty { break }
+            let probe: any SpeechModule = useSpeech ? speechModule!() : dictationModule!()
+            let best = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [probe])
             var more: [(String, Double, Double)] = []
             for (from, to) in pieces(of: holes) {
-                let clip = try gapClip(file, from: from, to: to, as: best)
+                // Each piece reaches half a second past both ends, so a word on the join is heard whole, by the piece it starts in.
+                let start = max(0, from - 0.5)
+                let clip = try gapClip(file, from: start, to: to + 0.5, as: best)
                 defer { try? FileManager.default.removeItem(at: clip) }
-                let t = dictate(locale)
-                let heard = try await run(t, t.results.map(\.text), clip).map { ($0.0, $0.1 + from, $0.2 + from) }
-                DebugLog.add("captions: gap \(String(format: "%.1f-%.1f", from, to)) heard:\(heard.map { String(format: " [%.1f-%.1f]", $0.1, $0.2) + $0.0 }.joined())")
-                more += heard.filter { $0.1 < to }
+                let heard = try await hear(clip, speech: useSpeech).map { ($0.0, $0.1 + start, $0.2 + start) }.filter { $0.1 >= from - 0.05 && $0.1 < to }
+                DebugLog.add("captions: \(String(format: "%.1f-%.1f", from, to)) heard:\(heard.map { String(format: " [%.1f]", $0.1) + $0.0 }.joined())")
+                more += heard
             }
-            DebugLog.add("captions: second pass over \(holes.count) gaps (\(Int(holes.reduce(0) { $0 + $1.1 - $1.0 }))s) found:\(more.map(\.0).joined())")
+            DebugLog.add("captions: \(useSpeech ? "speech" : "dictation") pass over \(holes.count) gaps (\(Int(holes.reduce(0) { $0 + $1.1 - $1.0 }))s) found:\(more.map(\.0).joined())")
             runs = (runs + more).sorted { $0.1 < $1.1 }
         }
-        return words(from: runs, romanize: language == "hindi")
+        return (words(from: runs, romanize: language == "hindi"), language)
+    }
+
+    /// The spoken language: the first minute heard in English, Hindi and the phone's own languages; the one the recognizer is
+    /// surest of wins, English on a near tie. Hindi words in the Hindi transcript count for Hindi, so Hinglish lands there
+    /// (and comes out in Latin letters).
+    static func detect(_ audio: URL) async throws -> String {
+        var names = ["english", "hindi"]
+        for id in Locale.preferredLanguages {
+            if let name = Locale(identifier: id).language.languageCode.flatMap({ codes[$0.identifier] }), !names.contains(name) { names.append(name) }
+        }
+        let file = try AVAudioFile(forReading: audio)
+        var best = ("english", -1.0)
+        for name in names {
+            var locale: Locale?
+            for id in locales[name] ?? [] where locale == nil { locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: id)) }
+            guard let locale else { continue }
+            let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange, .transcriptionConfidence])
+            let clip = try gapClip(file, from: 0, to: min(60, Double(file.length) / file.processingFormat.sampleRate),
+                                   as: await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]))
+            defer { try? FileManager.default.removeItem(at: clip) }
+            let heard = try await run(module, module.results.map(\.text), clip)
+            let letters = heard.reduce(0) { $0 + Double($1.0.count) }
+            var score = letters == 0 ? 0 : heard.reduce(0) { $0 + $1.3 * Double($1.0.count) } / letters
+            let text = heard.map(\.0).joined()
+            if name == "hindi" {
+                let said = text.lowercased().split { !$0.isLetter }.filter { hindiWords.contains(String($0)) }.count
+                score += min(0.3, 0.05 * Double(said))
+            }
+            DebugLog.add("captions: \(name) scores \(String(format: "%.2f", score)): \(text.prefix(80))")
+            if score > best.1 + (best.0 == "english" ? 0.02 : 0) { best = (name, score) }
+        }
+        return best.0
     }
 
     /// Stretches of 3 s or more with no captions, from the start to the end of the sound.
@@ -96,10 +110,10 @@ enum Captions {
         return out
     }
 
-    /// Gaps cut into pieces of at most 20 s, so each one is heard fresh.
+    /// Gaps cut into pieces of at most 8 s, so each one is heard fresh (longer pieces lose more words).
     static func pieces(of gaps: [(Double, Double)]) -> [(Double, Double)] {
         gaps.flatMap { gap -> [(Double, Double)] in
-            let n = max(1, Int(((gap.1 - gap.0) / 20).rounded(.up))), step = (gap.1 - gap.0) / Double(n)
+            let n = max(1, Int(((gap.1 - gap.0) / 8).rounded(.up))), step = (gap.1 - gap.0) / Double(n)
             return (0..<n).map { (gap.0 + Double($0) * step, gap.0 + Double($0 + 1) * step) }
         }
     }
@@ -140,9 +154,8 @@ enum Captions {
         return out
     }
 
-    /// Every timed run of text as (text, start, end), downloading the language model the first time.
-    @available(iOS 26, *)
-    static func run<S: AsyncSequence>(_ module: any SpeechModule, _ texts: S, _ audio: URL) async throws -> [(String, Double, Double)] where S.Element == AttributedString {
+    /// Every timed run of text as (text, start, end, confidence 0-1), downloading the language model the first time.
+    static func run<S: AsyncSequence>(_ module: any SpeechModule, _ texts: S, _ audio: URL) async throws -> [(String, Double, Double, Double)] where S.Element == AttributedString {
         DebugLog.add("captions: using \(type(of: module))")
         if let install = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
             DebugLog.add("captions: downloading the language model")
@@ -150,9 +163,11 @@ enum Captions {
         }
         let analyzer = SpeechAnalyzer(modules: [module])
         let collect = Task {
-            var runs: [(String, Double, Double)] = []
+            var runs: [(String, Double, Double, Double)] = []
             for try await text in texts {
-                for run in text.runs { if let r = run.audioTimeRange { runs.append((String(text[run.range].characters), r.start.seconds, r.end.seconds)) } }
+                for run in text.runs {
+                    if let r = run.audioTimeRange { runs.append((String(text[run.range].characters), r.start.seconds, r.end.seconds, run.transcriptionConfidence ?? 1)) }
+                }
             }
             return runs
         }
@@ -185,9 +200,9 @@ enum Captions {
             for p in parts {
                 let d = (end - start) * Double(p.count + 1) / total
                 if p.allSatisfy({ $0.isPunctuation }), let last = out.popLast() {
-                    out.append(Word(text: last.text + p, timestamp: last.timestamp))
+                    out.append(Word(text: last.text + p, start: last.start, end: last.end))
                 } else {
-                    out.append(Word(text: " " + p, timestamp: [t, t + d]))
+                    out.append(Word(text: p, start: t, end: t + d))
                 }
                 t += d
             }
@@ -195,15 +210,30 @@ enum Captions {
         return out
     }
 
-    /// Devanagari -> Hinglish spelling, like Whisper gives: नाम -> naam, आज -> aaj, हिंदी -> hindi.
+    /// Devanagari -> Hinglish, spelt the way people type it: आपके -> aapke, क्या -> kya, शादी -> shaadi, में -> mein.
     static func latin(_ word: String) -> String {
-        guard var s = word.applyingTransform(.toLatin, reverse: false) else { return word }
-        s = s.replacingOccurrences(of: "ā", with: "aa").replacingOccurrences(of: "ṁ", with: "n").replacingOccurrences(of: "ṃ", with: "n")
-        s = s.applyingTransform(.stripDiacritics, reverse: false) ?? s
-        // Hindi doesn't say the vowel written after a final consonant: नाम is "naam", not "naama".
-        if let last = word.unicodeScalars.last?.value, (0x915...0x939).contains(last) || (0x958...0x95F).contains(last), s.hasSuffix("a") {
-            s.removeLast()
+        let base = word.trimmingCharacters(in: .punctuationCharacters.union(.init(charactersIn: "।"))), tail = word.hasSuffix("।") ? "." : String(word.dropFirst(base.count))
+        if let w = common[base] { return w + tail }
+        guard var s = base.applyingTransform(.toLatin, reverse: false), s != base else { return word }
+        // Hindi doesn't say the vowel written after a final consonant (नाम is "naam"), nor one between two syllables (करने is "karne").
+        if let last = base.unicodeScalars.last?.value, (0x915...0x939).contains(last) || (0x958...0x95F).contains(last), s.hasSuffix("a") { s.removeLast() }
+        s = s.replacing(schwa) { String($0.output.1 + $0.output.2) }
+        if s.count > 2, s.hasSuffix("ā") { s = s.dropLast() + "a" } // गया -> gaya
+        for (from, to) in [("ēṁ", "ein"), ("ṁ", "n"), ("ṃ", "n"), ("m̐", "n"), ("ā'ī", "ai"), ("ā'ē", "aaye"), ("a'ē", "aye"), ("'", ""),
+                           ("ā", "aa"), ("ś", "sh"), ("ṣ", "sh"), ("ch", "\u{1}"), ("c", "ch"), ("\u{1}", "chh")] {
+            s = s.replacingOccurrences(of: from, with: to)
         }
-        return s
+        return (s.applyingTransform(.stripDiacritics, reverse: false) ?? s) + tail
     }
+
+    /// The vowel-consonant-a-consonant-vowel pattern whose "a" Hindi drops.
+    nonisolated(unsafe) static let schwa = try! Regex("([aāiīuūeoēō][^aāiīuūeoēō\\s']h?)a([^aāiīuūeoēō\\s']h?)(?=[aāiīuūeoēō])", as: (Substring, Substring, Substring).self)
+
+    /// Hindi's commonest words as Hinglish, which English speech almost never has.
+    static let hindiWords: Set<String> = ["hai", "hain", "ka", "ki", "ke", "ko", "se", "mein", "main", "nahi", "nahin", "kya", "aur", "toh", "hum",
+                                          "aap", "yeh", "woh", "bhi", "tha", "thi", "raha", "rahe", "rahi", "karenge", "kar", "karo", "dosto", "log", "kaise", "accha", "achha", "bhai", "haan", "matlab"]
+
+    /// Everyday words whose Hinglish spelling no rule gets right.
+    static let common = ["यह": "yeh", "वह": "woh", "हम": "hum", "तो": "toh", "मैं": "main", "हूँ": "hoon", "हूं": "hoon", "हाँ": "haan", "हां": "haan",
+                         "नहीं": "nahi", "ठीक": "theek", "अच्छा": "achha", "चीज़": "cheez", "चीज": "cheez", "क्यों": "kyun", "भी": "bhi", "ही": "hi"]
 }
