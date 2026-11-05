@@ -3,7 +3,7 @@
 name: iOS
 on:
   push:
-    paths-ignore: ['README.md', 'DESIGN.md', 'replica/**', 'drivers/**']
+    paths: ['ios/**', '.github/workflows/ios.yml']
   workflow_dispatch:
 
 jobs:
@@ -15,11 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
-      - name: Bundle the web app
-        run: |
-          mkdir Web
-          cp ../index.html ../style.css ../manifest.json ../icon-*.png ../*.js Web/
-          cp -R ../avatars Web/
       - run: xcodegen generate
       - name: Unit tests (simulator)
         run: |
