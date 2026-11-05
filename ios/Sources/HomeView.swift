@@ -8,6 +8,8 @@ struct HomeView: View {
     @State private var picked: PhotosPickerItem?
     @State private var recording = false
     @State private var importing = false
+    @State private var prompting = false // writing the teleprompter script before filming
+    @AppStorage("script") private var script = ""
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -32,8 +34,11 @@ struct HomeView: View {
                 picked = nil
             }
         }
+        .sheet(isPresented: $prompting) {
+            ScriptSheet(script: $script) { prompting = false; recording = true }
+        }
         .fullScreenCover(isPresented: $recording) {
-            Camera { url in Task { await open(url) } }.ignoresSafeArea()
+            Camera(script: script) { url in Task { await open(url) } }.ignoresSafeArea()
         }
     }
 
@@ -57,7 +62,7 @@ struct HomeView: View {
                     Label("New video", systemImage: "plus").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(BrandButton())
-                Button { recording = true } label: {
+                Button { prompting = true } label: {
                     Label("Record", systemImage: "video.fill")
                         .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
                         .background(Theme.raised, in: .capsule)
@@ -151,8 +156,57 @@ struct Movie: Transferable {
     }
 }
 
-/// The system camera, filming video.
+/// The script to read while filming; it scrolls over the top of the camera.
+struct ScriptSheet: View {
+    @Binding var script: String
+    let start: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Teleprompter").font(.title2.bold())
+                Text("Write what you'll say. It scrolls at the top of the camera; tap it to start or pause. Leave it empty to film without one.")
+                    .font(.subheadline).foregroundStyle(Theme.muted)
+                TextEditor(text: $script)
+                    .scrollContentBackground(.hidden).padding(10)
+                    .background(Theme.surface, in: .rect(cornerRadius: 14))
+                Button("Open camera", systemImage: "video.fill", action: start).buttonStyle(BrandButton()).frame(maxWidth: .infinity)
+            }
+            .padding(20)
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Clear") { script = "" }.disabled(script.isEmpty) } }
+        }
+        .presentationBackground(Theme.bg)
+    }
+}
+
+/// The script rolling upwards at a reading pace once tapped.
+struct Prompter: View {
+    let script: String
+    @State private var began: Date?
+    @State private var paused = 0.0 // seconds already scrolled when paused
+
+    var body: some View {
+        TimelineView(.animation(paused: began == nil)) { tick in
+            let rolled = paused + (began.map { tick.date.timeIntervalSince($0) } ?? 0)
+            Text(script)
+                .font(.title2.weight(.bold)).foregroundStyle(.white).multilineTextAlignment(.center)
+                .padding(.horizontal, 24).padding(.top, 70)
+                .offset(y: -rolled * 26) // about 150 words a minute
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .clipped()
+        }
+        .background(.black.opacity(0.55))
+        .overlay(alignment: .bottom) { if began == nil { Text(paused == 0 ? "Tap to start scrolling" : "Paused").font(.caption.bold()).padding(8) } }
+        .contentShape(.rect)
+        .onTapGesture {
+            if let b = began { paused += Date().timeIntervalSince(b); began = nil } else { began = Date() }
+        }
+    }
+}
+
+/// The system camera, filming video, with the teleprompter over its top third.
 struct Camera: UIViewControllerRepresentable {
+    var script = ""
     let done: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -163,6 +217,14 @@ struct Camera: UIViewControllerRepresentable {
         c.videoQuality = .typeHigh
         c.videoMaximumDuration = 600
         c.delegate = context.coordinator
+        if !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let host = UIHostingController(rootView: Prompter(script: script))
+            host.view.backgroundColor = .clear
+            let bounds = UIScreen.main.bounds
+            host.view.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height * 0.3)
+            context.coordinator.prompter = host // the overlay's controller has to stay alive
+            c.cameraOverlayView = host.view
+        }
         return c
     }
 
@@ -171,6 +233,7 @@ struct Camera: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
         let parent: Camera
+        var prompter: UIViewController?
         init(_ parent: Camera) { self.parent = parent }
 
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {

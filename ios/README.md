@@ -5,7 +5,11 @@ recognition, animates the captions word by word, cuts the ums and pauses, and ex
 
 - **Captions**: on-device `SpeechAnalyzer` (iOS 26), 14 languages; Hindi comes out in Hinglish spelling. "Detect automatically" hears the
   first minute in English, Hindi and the phone's languages and keeps the surest (Hindi words count for Hindi, so Hinglish lands there). Tap any word to fix or cut it.
-- **Edit**: trim start and end, speed 0.5×–2× (voices keep their pitch), volume and mute, rotate and mirror.
+- **Edit**: several clips one after another (add, reorder, delete), split at the playhead and delete a part, transitions
+  between clips or at every jump cut (Fade, Flash, Zoom, Blur), trim, speed 0.5×–2× (voices keep their pitch), rotate and mirror.
+- **Translate**: captions translated on the phone (Apple's Translation), sentence by sentence, keeping each sentence's timing.
+- **Background**: swap what's behind the person for blur or a colour (Vision person segmentation; not on the simulator).
+- **Teleprompter**: an optional script scrolls over the top of the camera while filming.
 - **Text**: titles and labels placed on the video for a chosen stretch, in any caption style and colour, sized and positioned freely.
 - **Audio**: Enhance voice (Apple's on-device voice isolation, `Audio.swift`), voice volume and mute, and background music from Files
   that loops under the video and dips while someone talks.

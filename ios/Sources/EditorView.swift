@@ -1,5 +1,7 @@
 import AVFoundation
+import PhotosUI
 import SwiftUI
+import Translation
 
 struct EditorView: View {
     enum Tool: String, CaseIterable {
@@ -29,6 +31,13 @@ struct EditorView: View {
     @State private var writing: Overlay? // the overlay whose words are being typed
     @State private var pickingMusic = false
     @State private var enhancing = false
+    @State private var pickedClip: PhotosPickerItem?
+    @State private var addingClip = false
+    @State private var translating: TranslationSession.Configuration?
+    @State private var translatingTo = ""
+
+    static let targets = [("en", "English"), ("hi", "Hindi"), ("es", "Spanish"), ("fr", "French"), ("de", "German"), ("pt", "Portuguese"),
+                          ("ar", "Arabic"), ("ja", "Japanese"), ("ko", "Korean"), ("zh", "Chinese")]
 
     private var preset: Preset { Preset.named(project.preset) }
 
@@ -67,6 +76,16 @@ struct EditorView: View {
             TextSheet(text: o.text) { text in
                 if let i = project.texts.firstIndex(where: { $0.id == o.id }) { change { $0.texts[i].text = text } } else { change { var n = o; n.text = text; $0.texts.append(n) } }
                 overlay = o.id
+            }
+        }
+        .translationTask(translating) { session in await translate(with: session) }
+        .onChange(of: pickedClip) { _, item in
+            guard let item else { return }
+            Task {
+                addingClip = true
+                if let movie = try? await item.loadTransferable(type: Movie.self) { await addClip(movie.url) }
+                addingClip = false
+                pickedClip = nil
             }
         }
         .fileImporter(isPresented: $pickingMusic, allowedContentTypes: [.audio]) { result in
@@ -185,7 +204,13 @@ struct EditorView: View {
         transcribing = true
         UIApplication.shared.isIdleTimerDisabled = true
         do {
-            let (words, heard) = try await Captions.transcribe(project.video, language: project.language)
+            // Each clip is heard on its own; the language found in the first is used for the rest.
+            var words: [Word] = [], heard = project.language
+            for (clip, start) in zip(project.reel, project.clipStarts) {
+                let (w, h) = try await Captions.transcribe(project.url(clip), language: heard)
+                words += w.map { Word(text: $0.text, start: $0.start + start, end: $0.end + start) }
+                heard = h
+            }
             UserDefaults.standard.set(project.language, forKey: "spokenLanguage") // new videos start in the last language used
             DebugLog.add("captions: \(words.count) words in \(heard)")
             change { $0.words = words; $0.heard = heard; $0.captioned = true }
@@ -220,7 +245,7 @@ struct EditorView: View {
 
     private func refresh(from before: Project) {
         guard let edit else { return }
-        let sameSound = before.speed == project.speed && before.volume == project.volume && before.enhanceVoice == project.enhanceVoice
+        let sameSound = before.clips == project.clips && before.speed == project.speed && before.volume == project.volume && before.enhanceVoice == project.enhanceVoice
             && before.music == project.music && before.musicVolume == project.musicVolume && before.duck == project.duck
         if before.kept.map({ [$0.0, $0.1] }) == project.kept.map({ [$0.0, $0.1] }) && sameSound {
             player.currentItem?.videoComposition = edit.videoComposition(project)
@@ -280,16 +305,31 @@ struct EditorView: View {
 
     @ViewBuilder private var captionsTool: some View {
         HStack {
-            Text(project.words.isEmpty ? "No captions yet" : project.language == "auto" && project.heard != nil
+            Text(project.words.isEmpty ? "No captions yet" : translating != nil ? "Translating…"
+                 : project.showTranslation && !project.translation.isEmpty ? "Showing the \(Self.targets.first { $0.0 == project.translatedTo }?.1 ?? "") translation"
+                 : project.language == "auto" && project.heard != nil
                  ? "Heard \(Self.languageName(project.heard!)) · tap a word to fix it" : "Tap a word to fix or cut it")
                 .font(.subheadline).foregroundStyle(Theme.muted)
             Spacer()
             if project.captioned {
                 Menu {
+                    Menu("Translate captions", systemImage: "globe") {
+                        ForEach(Self.targets, id: \.0) { code, name in
+                            Button(name) {
+                                let from = Captions.codes.first { $0.value == (project.heard ?? project.language) }?.key
+                                translatingTo = code
+                                translating = TranslationSession.Configuration(source: from.map { Locale.Language(identifier: $0) }, target: Locale.Language(identifier: code))
+                            }
+                        }
+                    }
+                    if !project.translation.isEmpty {
+                        Toggle("Show translation", systemImage: "character.bubble", isOn: bind(\.showTranslation))
+                    }
+                    Divider()
                     languagePicker
                     Button("Redo captions", systemImage: "arrow.clockwise") { Task { await transcribe() } }
-                } label: { Label("Redo", systemImage: "arrow.clockwise").font(.subheadline.bold()) }
-                .disabled(transcribing)
+                } label: { Label("More", systemImage: "ellipsis.circle").font(.subheadline.bold()) }
+                .disabled(transcribing || translating != nil)
             }
         }
         let keep = project.kept
@@ -338,6 +378,44 @@ struct EditorView: View {
     }
 
     @ViewBuilder private var editTool: some View {
+                Text("Clips").font(.subheadline).foregroundStyle(Theme.muted)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(project.reel.indices, id: \.self) { i in
+                            let n = project.reel.count
+                            Menu {
+                                Button("Move left", systemImage: "arrow.left") { move(i, by: -1) }.disabled(i == 0)
+                                Button("Move right", systemImage: "arrow.right") { move(i, by: 1) }.disabled(i == n - 1)
+                                Button("Delete clip", systemImage: "trash", role: .destructive) { change { $0 = $0.rearranged(Array(0..<n).filter { $0 != i }) } }.disabled(n == 1)
+                            } label: {
+                                Label("\(i + 1) · \(stamp(project.reel[i].duration))", systemImage: "film")
+                                    .font(.subheadline.weight(.semibold)).padding(.horizontal, 14).frame(minHeight: 40)
+                                    .background(Theme.surface, in: .capsule).overlay(Capsule().strokeBorder(Theme.line))
+                            }
+                        }
+                        PhotosPicker(selection: $pickedClip, matching: .videos) {
+                            Label(addingClip ? "Adding…" : "Add clip", systemImage: "plus").font(.subheadline.bold()).padding(.horizontal, 14).frame(minHeight: 40)
+                                .background(Theme.raised, in: .capsule)
+                        }
+                        .disabled(addingClip)
+                    }
+                }
+                HStack {
+                    Chip(title: "Split", icon: "scissors") { let t = project.sourceTime(time); change { $0.splits.append(t) } }
+                    Chip(title: "Delete part", icon: "trash") { deletePart() }
+                    if !project.removed.isEmpty { Chip(title: "Restore", icon: "arrow.uturn.backward") { change { $0.removed = [] } } }
+                }
+                Text("Split at the playhead, then delete the part it's in.").font(.footnote).foregroundStyle(Theme.muted)
+                Text("Transition").font(.subheadline).foregroundStyle(Theme.muted)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack { ForEach(["None", "Fade", "Flash", "Zoom", "Blur"], id: \.self) { k in Chip(title: k, selected: project.transition == k) { change { $0.transition = k } } } }
+                }
+                if project.transition != "None" {
+                    Toggle(isOn: bind(\.transitionOnCuts)) {
+                        Text("On every jump cut too")
+                        Text(project.reel.count > 1 ? "Not just between clips" : "With one clip, transitions play at cuts")
+                    }
+                }
                 slider("Start \(stamp(project.trimIn * project.duration))", Binding(get: { project.trimIn }, set: { v in change(\Project.trimIn) { $0.trimIn = min(v, $0.trimOut - 0.02) } }), 0...0.98)
                 slider("End \(stamp(project.trimOut * project.duration))", Binding(get: { project.trimOut }, set: { v in change(\Project.trimOut) { $0.trimOut = max(v, $0.trimIn + 0.02) } }), 0.02...1)
                 Text("Speed").font(.subheadline).foregroundStyle(Theme.muted)
@@ -435,16 +513,80 @@ struct EditorView: View {
     }
 
     private func enhance(_ on: Bool) async {
-        if on && !FileManager.default.fileExists(atPath: project.cleanVoice.path) {
+        if on {
             enhancing = true
             defer { enhancing = false }
-            do { try await Voice.enhance(project.video, to: project.cleanVoice) } catch {
-                DebugLog.add("voice: failed: \(error)")
-                failure = error.localizedDescription
-                return
+            for clip in project.reel where !FileManager.default.fileExists(atPath: project.cleanVoice(clip).path) {
+                do { try await Voice.enhance(project.url(clip), to: project.cleanVoice(clip)) } catch {
+                    DebugLog.add("voice: failed: \(error)")
+                    failure = error.localizedDescription
+                    return
+                }
             }
         }
         change { $0.enhanceVoice = on }
+    }
+
+    /// Every sentence translated on the phone, each timed like the sentence it came from.
+    private func translate(with session: TranslationSession) async {
+        defer { translating = nil }
+        let sentences = project.sentences
+        let asks = sentences.indices.map { TranslationSession.Request(sourceText: sentences[$0].map(\.text).joined(separator: " "), clientIdentifier: String($0)) }
+        do {
+            var out: [Word] = []
+            for reply in try await session.translations(from: asks) {
+                guard let i = reply.clientIdentifier.flatMap(Int.init), let s = sentences[safe: i], let first = s.first, let last = s.last else { continue }
+                out += Project.spread(reply.targetText, from: first.start, to: last.end)
+            }
+            let code = translatingTo
+            change { $0.translation = out.sorted { $0.start < $1.start }; $0.translatedTo = code; $0.showTranslation = true }
+            DebugLog.add("captions: translated \(sentences.count) sentences to \(code)")
+        } catch {
+            DebugLog.add("captions: translation failed: \(error)")
+            failure = "Couldn't translate: \(error.localizedDescription)"
+        }
+    }
+
+    private func move(_ i: Int, by step: Int) {
+        var order = Array(project.reel.indices)
+        order.swapAt(i, i + step)
+        change { $0 = $0.rearranged(order) }
+    }
+
+    private func deletePart() {
+        let (a, b) = project.part(at: project.sourceTime(time))
+        guard project.outputDuration - (b - a) / project.speed > 0.5 else { failure = "That would delete the whole video."; return }
+        change { $0.removed.append([a, b]) }
+        DebugLog.add("edit: deleted \(String(format: "%.1f-%.1f", a, b))")
+    }
+
+    /// Puts another video at the end, captioned like the rest.
+    private func addClip(_ url: URL) async {
+        let name = "clip-\(UUID().uuidString.prefix(8)).mov"
+        do {
+            try FileManager.default.moveItem(at: url, to: project.folder.appendingPathComponent(name))
+            let length = try await AVURLAsset(url: project.folder.appendingPathComponent(name)).load(.duration).seconds
+            let start = project.duration
+            change { p in
+                let old = p.duration
+                p.clips = p.reel + [Clip(file: name, duration: length)]
+                p.duration = old + length
+                p.trimIn *= old / p.duration // trims stay where they were in the first clips
+                if p.trimOut < 1 { p.trimOut *= old / p.duration }
+            }
+            DebugLog.add("edit: added a \(Int(length)) s clip")
+            guard let clip = project.clips.last else { return }
+            if project.enhanceVoice { try? await Voice.enhance(project.url(clip), to: project.cleanVoice(clip)); refresh(from: Project()) }
+            if project.captioned {
+                transcribing = true
+                defer { transcribing = false }
+                let (w, _) = try await Captions.transcribe(project.url(clip), language: project.heard ?? project.language)
+                change { $0.words += w.map { Word(text: $0.text, start: $0.start + start, end: $0.end + start) } }
+            }
+        } catch {
+            DebugLog.add("edit: couldn't add a clip: \(error)")
+            failure = error.localizedDescription
+        }
     }
 
     private func addMusic(_ url: URL) {
@@ -510,6 +652,10 @@ struct EditorView: View {
     }
 
     @ViewBuilder private var formatTool: some View {
+        Text("Background").font(.subheadline).foregroundStyle(Theme.muted)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack { ForEach(Compositor.backgrounds, id: \.self) { b in Chip(title: b == "Keep" ? "Original" : b, selected: project.background == b) { change { $0.background = b } } } }
+        }
         Text("Export quality").font(.subheadline).foregroundStyle(Theme.muted)
         HStack { ForEach([720, 1080, 2160], id: \.self) { q in Chip(title: q == 2160 ? "4K" : "\(q)p", selected: project.quality == q) { change { $0.quality = q } } } }
         Text("Shape").font(.subheadline).foregroundStyle(Theme.muted)

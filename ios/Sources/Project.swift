@@ -13,6 +13,13 @@ struct Line: Hashable {
     var end: Double { words.last!.end }
 }
 
+/// One video in the project. The clips play one after another; together they make the source timeline.
+struct Clip: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var file: String // in the project folder
+    var duration: Double
+}
+
 /// Text placed on the video for a while, like a title.
 struct Overlay: Codable, Hashable, Identifiable {
     var id = UUID()
@@ -33,11 +40,17 @@ enum Aspect: String, Codable, CaseIterable {
 struct Project: Codable, Identifiable, Hashable {
     var id = UUID()
     var created = Date()
-    var duration: Double = 0
+    var duration: Double = 0 // of all the clips together
+    var clips: [Clip] = [] // empty: just video.mov, as projects were before clips
+    var removed: [[Double]] = [] // source stretches deleted with Split and Delete
+    var splits: [Double] = [] // source times where the user split
     var language = UserDefaults.standard.string(forKey: "spokenLanguage") ?? "auto"
     var heard: String? // the language "auto" picked
     var words: [Word] = []
     var captioned = false
+    var translation: [Word] = [] // the captions in another language, on the source timeline
+    var translatedTo: String? // its language code
+    var showTranslation = false
     // Style
     var preset = "Karaoke"
     var size = 1.0
@@ -70,11 +83,16 @@ struct Project: Codable, Identifiable, Hashable {
     // Text and export
     var texts: [Overlay] = []
     var quality = 1080 // the short side of the export, in pixels
+    var transition = "None" // between clips
+    var transitionOnCuts = false // and at every jump cut
+    var background = "Keep" // what shows behind the person
 
     var folder: URL { Self.root.appendingPathComponent(id.uuidString) }
     var video: URL { folder.appendingPathComponent("video.mov") }
     var thumbnail: URL { folder.appendingPathComponent("thumb.jpg") }
-    var cleanVoice: URL { folder.appendingPathComponent("voice.m4a") }
+    var reel: [Clip] { clips.isEmpty ? [Clip(file: "video.mov", duration: duration)] : clips }
+    func url(_ c: Clip) -> URL { folder.appendingPathComponent(c.file) }
+    func cleanVoice(_ c: Clip) -> URL { folder.appendingPathComponent(c.file == "video.mov" ? "voice.m4a" : "voice-\(c.file).m4a") }
     var musicFile: URL? { music.map { folder.appendingPathComponent($0) } }
 
     static let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Projects")
@@ -113,6 +131,7 @@ extension Project {
     /// The parts of the source video that stay, in order, as (start, end) seconds.
     var kept: [(Double, Double)] {
         var removed: [(Double, Double)] = words.filter(isCut).map { ($0.start, $0.end) } + [(0, trimIn * duration), (trimOut * duration, duration)]
+            + self.removed.compactMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
         let spoken = words.filter { !isCut($0) }
         if cutPauses && !spoken.isEmpty {
             let pad = 0.12 // breathing room each side of a cut pause, so words don't clip
@@ -130,6 +149,75 @@ extension Project {
         return out.filter { $0.1 - $0.0 > 0.04 }
     }
 
+    /// The words in sentences, for translating: a sentence ends at . ? !, a pause, or 14 words.
+    var sentences: [[Word]] {
+        var out: [[Word]] = [], s: [Word] = []
+        for w in words where !w.cut {
+            if let last = s.last, s.count >= 14 || w.start - last.end > 0.7 || last.text.last.map(".?!।".contains) == true { out.append(s); s = [] }
+            s.append(w)
+        }
+        if !s.isEmpty { out.append(s) }
+        return out
+    }
+
+    /// A translated sentence as timed words, spread over the time the original took, longer words for longer.
+    static func spread(_ text: String, from: Double, to: Double) -> [Word] {
+        let parts = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        let total = Double(parts.reduce(0) { $0 + $1.count + 1 })
+        var t = from
+        return parts.map { p in
+            let d = (to - from) * Double(p.count + 1) / max(1, total)
+            defer { t += d }
+            return Word(text: p, start: t, end: t + d)
+        }
+    }
+
+    /// Where each clip starts on the source timeline.
+    var clipStarts: [Double] { reel.dropLast().reduce(into: [0.0]) { $0.append($0.last! + $1.duration) } }
+
+    /// The source time shown at output time `t` (the inverse of `outputTime`, with speed).
+    func sourceTime(_ t: Double) -> Double {
+        var left = t * speed
+        for (a, b) in kept {
+            if left <= b - a { return a + left }
+            left -= b - a
+        }
+        return kept.last?.1 ?? 0
+    }
+
+    /// The stretch around source time `t` between splits, clip edges and cuts: what Delete removes.
+    func part(at t: Double) -> (Double, Double) {
+        let edges = (splits + clipStarts + [duration] + kept.flatMap { [$0.0, $0.1] }).sorted()
+        return (edges.last { $0 <= t + 1e-6 } ?? 0, edges.first { $0 > t + 1e-6 } ?? duration)
+    }
+
+    /// The clips in a new order, given as old indices; a clip left out is deleted. Words, splits and deleted stretches
+    /// move with their clip.
+    func rearranged(_ order: [Int]) -> Project {
+        let old = reel, oldStarts = clipStarts
+        var p = self
+        p.clips = order.map { old[$0] }
+        p.duration = p.clips.reduce(0) { $0 + $1.duration }
+        let newStarts = p.clipStarts
+        func move(_ t: Double) -> Double? { // a source time in its clip's new place, nil if that clip went
+            guard let k = oldStarts.lastIndex(where: { $0 <= t + 1e-9 }), let j = order.firstIndex(of: k) else { return nil }
+            return t - oldStarts[k] + newStarts[j]
+        }
+        p.words = words.compactMap { w in move(w.start).map { var w = w; w.end = $0 + w.end - w.start; w.start = $0; return w } }.sorted { $0.start < $1.start }
+        p.splits = splits.compactMap(move)
+        // A deleted stretch can cross into the next clip, so it is cut at clip edges first.
+        let edges = oldStarts + [duration]
+        p.removed = removed.flatMap { r -> [[Double]] in
+            guard r.count == 2 else { return [] }
+            return zip(edges, edges.dropFirst()).compactMap { a, b in
+                let lo = max(r[0], a), hi = min(r[1], b)
+                guard hi > lo, let m = move(lo) else { return nil }
+                return [m, m + hi - lo]
+            }
+        }
+        return p
+    }
+
     /// Where a source time lands once the cuts are made, or nil if it was cut.
     static func outputTime(_ t: Double, kept: [(Double, Double)]) -> Double? {
         var before = 0.0
@@ -145,7 +233,7 @@ extension Project {
     func lines(maxWords: Int) -> [Line] {
         let keep = kept
         var lines: [Line] = [], line: [Word] = []
-        for w in words where !isCut(w) {
+        for w in (showTranslation && !translation.isEmpty ? translation : words) where !isCut(w) {
             guard let s = Self.outputTime(w.start, kept: keep).map({ $0 / speed }) else { continue }
             let moved = Word(text: w.text, start: s, end: s + (w.end - w.start) / speed)
             if let last = line.last, line.count >= maxWords || moved.start - last.end > 0.3 || last.text.last.map(".?!".contains) == true {
@@ -178,4 +266,8 @@ extension Project {
             "\(i + 1)\n\(stamp(l.start)) --> \(stamp(l.end))\n\(l.words.map(\.text).joined(separator: " "))\n"
         }.joined(separator: "\n")
     }
+}
+
+extension Array {
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }
