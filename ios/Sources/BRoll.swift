@@ -15,22 +15,40 @@ enum BRoll {
         @Guide(description: "How much a visual would help here, 0 to 10", .range(0...10)) var score: Int
     }
     @Generable struct Plan { @Guide(description: "One entry per sentence, in order") var picks: [Pick] }
+    @Generable struct Topic {
+        @Guide(description: "What the whole video is about, in a few English words, naming it exactly (the game, product, place, dish or person)") var subject: String
+        @Guide(description: "The proper names that matter most in the video, as they're spelt in English", .maximumCount(5)) var names: [String]
+    }
+
+    /// What the whole video is about, so each sentence's search can name it.
+    static func topic(_ text: String, model: SystemLanguageModel) async -> Topic? {
+        let session = LanguageModelSession(model: model, instructions: "You read the transcript of a talking video. It may be Hinglish (Hindi in Latin letters).")
+        do { return try await session.respond(to: "Transcript:\n" + String(text.prefix(3500)), generating: Topic.self).content } catch {
+            DebugLog.add("broll: couldn't find the topic: \(error)")
+            return nil
+        }
+    }
 
     /// The moments worth a visual, with what to search for. Apple's on-device model reads the sentences (Hinglish too);
     /// without it, the strongest noun of each sentence is used.
-    static func plan(_ p: Project) async -> [Broll] {
+    static func plan(_ p: Project) async -> (moments: [Broll], names: [String]) {
         let keep = p.kept
         let sentences = p.sentences.compactMap { s -> (String, Double, Double)? in
             guard let a = Project.outputTime(s.first!.start, kept: keep), let b = Project.outputTime(s.last!.end, kept: keep) ?? Project.outputTime(s.last!.start, kept: keep) else { return nil }
             return (s.map(\.text).joined(separator: " "), a / p.speed, b / p.speed)
         }
-        var cands: [(Double, Double, String, String, Int)] = []
+        var cands: [(Double, Double, String, String, Int)] = [], names: [String] = [], subject = ""
         if case .available = SystemLanguageModel.default.availability {
             // The user's own words are being reworded, so the gentler content filter applies; a batch it still refuses is
             // retried a sentence at a time, so one flagged line doesn't cost the rest.
             let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+            let about = await topic(sentences.map(\.0).joined(separator: " "), model: model)
+            names = about?.names ?? []
+            subject = about?.subject ?? ""
+            DebugLog.add("broll: the video is about \(subject), names \(names)")
+            let context = about.map { "The whole video is about \($0.subject). When a sentence is about it, name it in the query (\($0.names.joined(separator: ", "))), so the picture shows exactly that, not something generic. " } ?? ""
             func ask(_ batch: [(String, Double, Double)]) async -> [Pick]? {
-                let session = LanguageModelSession(model: model, instructions: "You pick B-roll for a talking video. Sentences may be Hinglish (Hindi in Latin letters); understand their meaning. Search queries are always English.")
+                let session = LanguageModelSession(model: model, instructions: "You pick B-roll for a talking video. Sentences may be Hinglish (Hindi in Latin letters); understand their meaning. Search queries are always English: one short phrase, no commas. " + context)
                 let prompt = "Sentences:\n" + batch.enumerated().map { "\($0.offset + 1). \($0.element.0)" }.joined(separator: "\n")
                 do { return try await session.respond(to: prompt, generating: Plan.self).content.picks } catch {
                     DebugLog.add("broll: the on-device model refused \(batch.count) sentences: \(error)")
@@ -45,7 +63,11 @@ enum BRoll {
                     picks = one
                 }
                 DebugLog.add("broll: picks \((picks ?? []).map { "\($0.score) \($0.kind) \($0.query)" })")
-                for (s, k) in zip(batch, picks ?? []) where !k.query.isEmpty { cands.append((s.1, s.2, k.query, ["gif", "meme"].contains(k.kind) ? k.kind : "photo", k.score)) }
+                for (s, k) in zip(batch, picks ?? []) where !k.query.isEmpty {
+                    // A list ("key, Canada, metal") searches for all of it and finds nothing; its first two parts make a phrase.
+                    let query = k.query.split(separator: ",").prefix(2).map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+                    cands.append((s.1, s.2, query, ["gif", "meme"].contains(k.kind) ? k.kind : "photo", k.score))
+                }
             }
             DebugLog.add("broll: the on-device model read \(sentences.count) sentences")
         }
@@ -53,7 +75,7 @@ enum BRoll {
             for s in sentences { if let noun = strongestNoun(s.0) { cands.append((s.1, s.2, noun, "photo", 6)) } }
             DebugLog.add("broll: no on-device model, used nouns from \(sentences.count) sentences")
         }
-        return Project.moments(cands)
+        return (Project.moments(cands), (names + [subject]).filter { !$0.isEmpty })
     }
 
     /// Whether the query names something (a place, a company, a person), which Wikipedia has a picture of.
@@ -111,7 +133,7 @@ enum BRoll {
         return pages.compactMap { p in
             guard let src = (p["thumbnail"] as? [String: Any])?["source"] as? String, let name = p["pageimage"] as? String else { return nil }
             let page = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-            return Broll.Found(url: src, credit: "\"\(p["title"] as? String ?? query)\" via Wikimedia Commons: https://commons.wikimedia.org/wiki/File:\(page)")
+            return Broll.Found(url: src, credit: "\"\(p["title"] as? String ?? query)\" via Wikimedia Commons: https://commons.wikimedia.org/wiki/File:\(page)", about: p["title"] as? String ?? "")
         }
     }
 
@@ -125,7 +147,9 @@ enum BRoll {
             let meta = info["extmetadata"] as? [String: [String: Any]] ?? [:]
             let artist = (meta["Artist"]?["value"] as? String ?? "unknown").replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
             let licence = meta["LicenseShortName"]?["value"] as? String ?? ""
-            return Broll.Found(url: src, credit: "\(p["title"] as? String ?? query) by \(artist), \(licence), via Wikimedia Commons: \(info["descriptionurl"] as? String ?? "")", gif: gif)
+            let description = (meta["ImageDescription"]?["value"] as? String ?? "").replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            let title = (p["title"] as? String ?? "").replacingOccurrences(of: "File:", with: "")
+            return Broll.Found(url: src, credit: "\(title) by \(artist), \(licence), via Wikimedia Commons: \(info["descriptionurl"] as? String ?? "")", gif: gif, about: title + " " + description.prefix(300))
         }
     }
 
@@ -133,7 +157,7 @@ enum BRoll {
         guard !giphyKey.isEmpty, let d = try? await json("https://api.giphy.com/v1/gifs/search", ["api_key": giphyKey, "q": query, "limit": "8", "rating": "pg-13"]) else { return [] }
         return (d["data"] as? [[String: Any]] ?? []).compactMap { g in
             guard let url = ((g["images"] as? [String: Any])?["downsized"] as? [String: Any])?["url"] as? String else { return nil }
-            return Broll.Found(url: url, credit: "\"\(g["title"] as? String ?? query)\" via GIPHY: \(g["url"] as? String ?? "")", gif: true)
+            return Broll.Found(url: url, credit: "\"\(g["title"] as? String ?? query)\" via GIPHY: \(g["url"] as? String ?? "")", gif: true, about: (g["title"] as? String ?? "") + " " + (g["alt_text"] as? String ?? ""))
         }
     }
 
@@ -141,23 +165,50 @@ enum BRoll {
         guard !pexelsKey.isEmpty, let d = try? await json("https://api.pexels.com/v1/search", ["query": query, "per_page": "8"], headers: ["Authorization": pexelsKey]) else { return [] }
         return (d["photos"] as? [[String: Any]] ?? []).compactMap { p in
             guard let src = (p["src"] as? [String: Any])?["large"] as? String else { return nil }
-            return Broll.Found(url: src, credit: "Photo by \(p["photographer"] as? String ?? "unknown") on Pexels: \(p["url"] as? String ?? "")")
+            return Broll.Found(url: src, credit: "Photo by \(p["photographer"] as? String ?? "unknown") on Pexels: \(p["url"] as? String ?? "")", about: p["alt"] as? String ?? "")
         }
     }
 
-    /// Everything a moment could show, best first: GIFs and memes from GIPHY when there's a key, then photos.
-    static func search(_ query: String, kind: String) async -> [Broll.Found] {
+    /// Everything a moment could show, the closest matches first; pictures that match none of the search's words are
+    /// dropped. When nothing matches, a picture of the video's subject stands in, which beats an unrelated one.
+    static func search(_ query: String, kind: String, names: [String] = []) async -> [Broll.Found] {
+        // The search as said, then shorter: without the video's names, its last two words, its strongest noun; then the
+        // names themselves. "Ghost of Yotei katana sword fight" has no free pictures, "sword fight" does.
+        let words = query.split(separator: " ").map(String.init)
+        let bare = words.filter { w in !names.contains { $0.localizedCaseInsensitiveContains(w) } }.joined(separator: " ")
+        var tries = [query, bare, words.suffix(2).joined(separator: " "), strongestNoun(query) ?? ""] + names
+        tries = tries.filter { !$0.isEmpty }.reduce(into: [String]()) { if !$0.contains($1.lowercased()) { $0.append($1.lowercased()) } }
+        for (i, q) in tries.enumerated() {
+            let ranked = rank(await find(q, kind: i == 0 ? kind : "photo", names: names), query: q, names: names)
+            if !ranked.isEmpty {
+                if i > 0 { DebugLog.add("broll: nothing matched \"\(query)\", showing \"\(q)\"") }
+                return ranked
+            }
+        }
+        return []
+    }
+
+    /// Matching pictures, best first. GIPHY and Pexels results count as matches unless another source matches better,
+    /// since their titles are short.
+    static func rank(_ found: [Broll.Found], query: String, names: [String]) -> [Broll.Found] {
+        let scored = found.enumerated().map { (i, f) in (f, Project.match(f.about, query: query, names: names) + (f.credit.contains("GIPHY") || f.credit.contains("Pexels") ? 0.3 : 0), i) }
+        return scored.filter { $0.1 > 0.3 }.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }.map(\.0)
+    }
+
+    static func find(_ query: String, kind: String, names: [String] = []) async -> [Broll.Found] {
         async let gifs = kind == "photo" ? [] : giphy(kind == "meme" ? query + " meme" : query)
         // Wikipedia only for names (Walmart, Mumbai): for ideas it answers with whichever article mentions the words.
-        async let named = isName(query) ? wikipedia(query) : []
+        async let named = isName(query) || names.contains(where: { query.localizedCaseInsensitiveContains($0) }) ? wikipedia(query) : []
         async let free = commons(query, gif: false)
         async let stock = pexels(query)
         return await gifs + stock + named + free
     }
 
     /// Downloads the moment's current pick into the project, skipping ones that fail. Nothing found makes it a text card.
-    static func fetch(_ b: Broll, into folder: URL) async -> Broll {
+    static func fetch(_ b: Broll, into folder: URL, avoiding used: Set<String> = []) async -> Broll {
         var b = b
+        // The first option no other moment shows: one picture four times looks broken.
+        if let fresh = b.options.indices.first(where: { !used.contains(b.options[$0].url) }) { b.pick = fresh }
         for _ in 0..<min(4, b.options.count) {
             let o = b.options[b.pick % b.options.count]
             if let url = URL(string: o.url), let (data, _) = try? await URLSession.shared.data(for: { var r = URLRequest(url: url, timeoutInterval: 15); r.setValue(agent, forHTTPHeaderField: "User-Agent"); return r }()),

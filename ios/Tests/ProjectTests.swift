@@ -110,4 +110,11 @@ final class ProjectTests: XCTestCase {
         XCTAssertEqual(m[0].start, 2.15, accuracy: 1e-9)
         XCTAssertEqual(m.map(\.mode), ["full", "card"])
     }
+
+    func testPictureMatchCountsTheSearchWords() {
+        XCTAssertEqual(Project.match("Brass padlock with key", query: "brass key"), 1) // "keys" and "key" are one word
+        XCTAssertEqual(Project.match("Valve keys on a brass wind instrument", query: "brass key"), 1)
+        XCTAssertEqual(Project.match("Detailed map of South Ossetia", query: "sword fight"), 0)
+        XCTAssertEqual(Project.match("PS5 Digital Edition with DualSense controller", query: "game console", names: ["PS5"]), 0.25)
+    }
 }

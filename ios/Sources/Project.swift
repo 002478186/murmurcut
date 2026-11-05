@@ -33,7 +33,7 @@ struct Overlay: Codable, Hashable, Identifiable {
 
 /// A picture, GIF or meme shown over the video while a sentence is said.
 struct Broll: Codable, Hashable, Identifiable {
-    struct Found: Codable, Hashable { var url: String; var credit: String; var gif = false }
+    struct Found: Codable, Hashable { var url: String; var credit: String; var gif = false; var about = "" } // about: the picture's title and description
     var id = UUID()
     var start, end: Double // on the output timeline
     var query: String
@@ -97,6 +97,7 @@ struct Project: Codable, Identifiable, Hashable {
     // Text and export
     var texts: [Overlay] = []
     var brolls: [Broll] = []
+    var topicNames: [String] = [] // what the video is about, found by Auto B-roll, for its searches
     var quality = 1080 // the short side of the export, in pixels
     var transition = "None" // between clips
     var transitionOnCuts = false // and at every jump cut
@@ -197,6 +198,18 @@ extension Project {
         }
         let modes = ["full", "card", "blur"]
         return picked.sorted { $0.start < $1.start }.enumerated().map { i, b in var b = b; b.mode = b.kind == "photo" ? modes[i % 3] : "card"; return b }
+    }
+
+    /// How well a picture's title and description match a search: the share of the search's words found in them (plurals
+    /// and case ignored), with a small bonus for each of the video's names it mentions.
+    static func match(_ about: String, query: String, names: [String] = []) -> Double {
+        func words(_ s: String) -> Set<String> {
+            Set(s.lowercased().split { !$0.isLetter && !$0.isNumber }.map { w in w.count > 3 && w.hasSuffix("s") ? String(w.dropLast()) : String(w) }.filter { $0.count > 1 })
+        }
+        let have = words(about), want = words(query).subtracting(["the", "and", "of", "a", "with", "in", "on", "for"])
+        guard !want.isEmpty else { return 0 }
+        let named = names.filter { !words($0).isEmpty && words($0).isSubset(of: have) }.count
+        return Double(want.intersection(have).count) / Double(want.count) + 0.25 * Double(named)
     }
 
     /// Where each clip starts on the source timeline.

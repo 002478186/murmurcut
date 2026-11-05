@@ -3,3 +3,4 @@ Web/
 build/
 Payload/
 *.ipa
+Info.plist

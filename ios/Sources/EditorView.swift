@@ -623,15 +623,15 @@ struct EditorView: View {
         brollNote = "Reading your sentences…"
         defer { brollNote = nil }
         let keepOwn = project.brolls.filter { $0.credit == "Your photo" }
-        var moments = await BRoll.plan(project)
+        var (moments, names) = await BRoll.plan(project)
         DebugLog.add("broll: \(moments.count) moments: \(moments.map(\.query).joined(separator: ", "))")
         for i in moments.indices {
             brollNote = "Finding pictures \(i + 1) of \(moments.count)…"
-            moments[i].options = await BRoll.search(moments[i].query, kind: moments[i].kind)
-            moments[i] = await BRoll.fetch(moments[i], into: project.folder)
+            moments[i].options = await BRoll.search(moments[i].query, kind: moments[i].kind, names: names)
+            moments[i] = await BRoll.fetch(moments[i], into: project.folder, avoiding: Set(moments[..<i].compactMap { $0.options[safe: $0.pick]?.url }))
         }
         for old in project.brolls where !keepOwn.contains(old) { if let f = old.file { try? FileManager.default.removeItem(at: project.folder.appendingPathComponent(f)) } }
-        change { $0.brolls = (keepOwn + moments).sorted { $0.start < $1.start } }
+        change { $0.brolls = (keepOwn + moments).sorted { $0.start < $1.start }; $0.topicNames = names }
         broll = nil
         if moments.isEmpty { failure = "Nothing in this video needed a picture. Add your own with the photo button." }
     }
@@ -648,7 +648,7 @@ struct EditorView: View {
         brollNote = "Searching…"
         defer { brollNote = nil }
         b.query = query; b.pick = 0
-        b.options = await BRoll.search(query, kind: b.kind == "text" ? "photo" : b.kind)
+        b.options = await BRoll.search(query, kind: b.kind == "text" ? "photo" : b.kind, names: project.topicNames)
         let got = await BRoll.fetch(b, into: project.folder)
         change { p in if let i = p.brolls.firstIndex(where: { $0.id == id }) { p.brolls[i] = got } }
         if got.file == nil { failure = "Nothing was found for \"\(query)\"." }
