@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import UIKit
+import Vision
 
 /// A caption look. Each one is data; `Captioner` draws them all.
 struct Preset {
@@ -35,8 +36,9 @@ struct Preset {
 
     static func named(_ name: String) -> Preset { all.first { $0.name == name } ?? all[0] }
 
-    static let accents = [0xFFD60A, 0x32D74B, 0xFF3D8B, 0x3DE0FF, 0x9B7BFF, 0xFF8A3D].map {
-        UIColor(red: CGFloat($0 >> 16) / 255, green: CGFloat($0 >> 8 & 255) / 255, blue: CGFloat($0 & 255) / 255, alpha: 1)
+    static let accents: [UIColor] = [0xFFD60A, 0x32D74B, 0xFF3D8B, 0x3DE0FF, 0x9B7BFF, 0xFF8A3D].map { (hex: Int) -> UIColor in
+        let r = CGFloat(hex >> 16) / 255, g = CGFloat(hex >> 8 & 255) / 255, b = CGFloat(hex & 255) / 255
+        return UIColor(red: r, green: g, blue: b, alpha: 1)
     }
 }
 
@@ -160,8 +162,15 @@ struct Frame {
     var project: Project
     var preset: Preset
     var lines: [Line]
-    var orientation: CGImagePropertyOrientation
+    var orientations: [CMPersistentTrackID: CGImagePropertyOrientation]
+    var joins: [Double] // where the transition plays, on the output timeline
     var renderSize: CGSize
+
+    /// How far into the transition time `t` is: 1 right on a join, 0 a quarter second either side.
+    func transition(at t: Double) -> Double {
+        guard project.transition != "None", let j = joins.min(by: { abs($0 - t) < abs($1 - t) }) else { return 0 }
+        return max(0, 1 - abs(j - t) / 0.25)
+    }
 
     func zoom(at t: Double) -> Double {
         guard project.punchIns else { return 1 }
@@ -180,14 +189,14 @@ final class Instruction: NSObject, AVVideoCompositionInstructionProtocol {
     let containsTweening = true
     let requiredSourceTrackIDs: [NSValue]?
     let passthroughTrackID = kCMPersistentTrackID_Invalid
-    let track: CMPersistentTrackID
+    let track: CMPersistentTrackID // the clip playing; any other track with a frame stands in at the joins
     let scene: Frame
 
-    init(_ range: CMTimeRange, track: CMPersistentTrackID, scene: Frame) {
+    init(_ range: CMTimeRange, track: CMPersistentTrackID, all: [CMPersistentTrackID], scene: Frame) {
         timeRange = range
         self.track = track
         self.scene = scene
-        requiredSourceTrackIDs = [NSNumber(value: track)]
+        requiredSourceTrackIDs = ([track] + all.filter { $0 != track }).map { NSNumber(value: $0) }
     }
 }
 
@@ -200,40 +209,81 @@ final class Compositor: NSObject, AVVideoCompositing {
     func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {}
 
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
-        guard let ins = request.videoCompositionInstruction as? Instruction, let frame = request.sourceFrame(byTrackID: ins.track),
+        guard let ins = request.videoCompositionInstruction as? Instruction,
+              let (track, frame) = ins.requiredSourceTrackIDs?.lazy.compactMap({ id -> (CMPersistentTrackID, CVPixelBuffer)? in
+                  let id = CMPersistentTrackID(truncating: id as! NSNumber)
+                  return request.sourceFrame(byTrackID: id).map { (id, $0) }
+              }).first,
               let out = request.renderContext.newPixelBuffer() else {
             return request.finish(with: NSError(domain: "murmurcut", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video frame"]))
         }
         let t = request.compositionTime.seconds, s = ins.scene, R = s.renderSize
-        Self.context.render(Self.place(CIImage(cvPixelBuffer: frame), scene: s, zoom: s.zoom(at: t)), to: out, bounds: CGRect(origin: .zero, size: R), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+        var image = Self.place(CIImage(cvPixelBuffer: frame), orientation: s.orientations[track] ?? .up, scene: s, zoom: s.zoom(at: t), transition: s.transition(at: t))
+        let broll = s.project.brolls.first { t >= $0.start && t < $0.end }
+        if let broll { image = BRoll.draw(broll, over: image, at: t, folder: s.project.folder, size: R) }
+        Self.context.render(image, to: out, bounds: CGRect(origin: .zero, size: R), colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
         let line = s.lines.last(where: { $0.start <= t + 0.05 && t < $0.end + 0.25 }), texts = s.project.texts.filter { t >= $0.start && t < $0.end }
-        if line != nil || !texts.isEmpty {
+        // A text card (no picture found) shows its keyword large over the blurred video.
+        let card = broll.flatMap { $0.file == nil ? Overlay(text: $0.query.capitalized, start: $0.start, end: $0.end, y: 0.4, size: 2, preset: "Editorial") : nil }
+        if line != nil || !texts.isEmpty || card != nil {
             CVPixelBufferLockBaseAddress(out, [])
             if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(out), width: Int(R.width), height: Int(R.height), bitsPerComponent: 8,
                                    bytesPerRow: CVPixelBufferGetBytesPerRow(out), space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                    bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
                 ctx.translateBy(x: 0, y: R.height); ctx.scaleBy(x: 1, y: -1)
                 if let line { Captioner.draw(line, at: t, preset: s.preset, project: s.project, in: ctx, size: R) }
-                for o in texts { Captioner.draw(o, at: t, project: s.project, in: ctx, size: R) }
+                for o in texts + (card.map { [$0] } ?? []) { Captioner.draw(o, at: t, project: s.project, in: ctx, size: R) }
             }
             CVPixelBufferUnlockBaseAddress(out, [])
         }
         request.finish(withComposedVideoFrame: out)
     }
 
-    static func place(_ source: CIImage, scene s: Frame, zoom: Double) -> CIImage {
-        var img = source.oriented(s.orientation).oriented([.up, .right, .down, .left][s.project.turns % 4])
+    static func place(_ source: CIImage, orientation: CGImagePropertyOrientation, scene s: Frame, zoom: Double, transition x: Double) -> CIImage {
+        var img = source.oriented(orientation).oriented([.up, .right, .down, .left][s.project.turns % 4])
         if s.project.mirror { img = img.oriented(.upMirrored) }
         img = img.transformed(by: CGAffineTransform(translationX: -img.extent.minX, y: -img.extent.minY))
+        if s.project.background != "Keep" { img = behind(img, s.project.background) }
+        let zoom = zoom * (s.project.transition == "Zoom" ? 1 + 0.35 * Captioner.easeOut(x) : 1)
         let R = s.renderSize, w = img.extent.width, h = img.extent.height
         let frame = CGRect(origin: .zero, size: R)
         func fitted(_ scale: Double) -> CIImage {
             img.transformed(by: CGAffineTransform(scaleX: scale, y: scale).concatenating(CGAffineTransform(translationX: (R.width - w * scale) / 2, y: (R.height - h * scale) / 2)))
         }
         let fill = max(R.width / w, R.height / h)
-        guard s.project.fit else { return Look.grade(fitted(fill * zoom).cropped(to: frame), s.project) }
-        let back = fitted(fill).clampedToExtent().applyingGaussianBlur(sigma: 40).applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.6])
-        return Look.grade(fitted(min(R.width / w, R.height / h) * zoom).composited(over: back).cropped(to: frame), s.project)
+        var out: CIImage
+        if s.project.fit {
+            let back = fitted(fill).clampedToExtent().applyingGaussianBlur(sigma: 40).applyingFilter("CIExposureAdjust", parameters: [kCIInputEVKey: -0.6])
+            out = Look.grade(fitted(min(R.width / w, R.height / h) * zoom).composited(over: back).cropped(to: frame), s.project)
+        } else {
+            out = Look.grade(fitted(fill * zoom).cropped(to: frame), s.project)
+        }
+        guard x > 0 else { return out }
+        switch s.project.transition {
+        case "Fade", "Flash":
+            let to = CIImage(color: s.project.transition == "Fade" ? .black : .white).cropped(to: frame)
+            out = out.applyingFilter("CIDissolveTransition", parameters: [kCIInputTargetImageKey: to, kCIInputTimeKey: Captioner.easeOut(x)])
+        case "Zoom", "Blur":
+            out = out.clampedToExtent().applyingGaussianBlur(sigma: (s.project.transition == "Blur" ? 30 : 10) * x).cropped(to: frame)
+        default: break
+        }
+        return out
+    }
+
+    static let backgrounds = ["Keep", "Blur", "Black", "White", "Pink", "Green"]
+
+    /// The person kept, and what's behind them replaced (Vision's person segmentation).
+    static func behind(_ img: CIImage, _ kind: String) -> CIImage {
+        let ask = VNGeneratePersonSegmentationRequest()
+        ask.qualityLevel = .balanced
+        ask.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        guard (try? VNImageRequestHandler(ciImage: img).perform([ask])) != nil, let mask = ask.results?.first?.pixelBuffer else { return img }
+        var matte = CIImage(cvPixelBuffer: mask)
+        matte = matte.transformed(by: CGAffineTransform(scaleX: img.extent.width / matte.extent.width, y: img.extent.height / matte.extent.height))
+        let colours: [String: CIColor] = ["Black": .black, "White": .white, "Pink": CIColor(red: 1, green: 0.24, blue: 0.55), "Green": .green]
+        let back = colours[kind].map { CIImage(color: $0).cropped(to: img.extent) }
+            ?? img.clampedToExtent().applyingGaussianBlur(sigma: 30).cropped(to: img.extent)
+        return img.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: back, kCIInputMaskImageKey: matte])
     }
 }
 
@@ -301,44 +351,73 @@ struct Look {
 struct Edit {
     let composition: AVMutableComposition
     let audioMix: AVMutableAudioMix
-    let track: CMPersistentTrackID
+    let tracks: [CMPersistentTrackID]
+    let orientations: [CMPersistentTrackID: CGImagePropertyOrientation]
+    let parts: [(range: CMTimeRange, track: CMPersistentTrackID)] // which clip plays when, on the composition's timeline
+    let clipJoins, cutJoins: [Double] // output seconds where the next clip starts, and where a jump cut is
     let natural: CGSize
-    let orientation: CGImagePropertyOrientation
     let fps: Float
 
     init(_ project: Project) async throws {
-        let asset = AVURLAsset(url: project.video)
-        guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw Captions.Failure(errorDescription: "This file has no video") }
-        let clean = project.enhanceVoice && FileManager.default.fileExists(atPath: project.cleanVoice.path)
-        let voice = clean ? AVURLAsset(url: project.cleanVoice) : asset // kept alive while its track is inserted
-        let sound = try await voice.loadTracks(withMediaType: .audio).first
-        let (size, transform, rate) = try await video.load(.naturalSize, .preferredTransform, .nominalFrameRate)
         composition = AVMutableComposition()
-        let v = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
-        let a = sound == nil ? nil : composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-        v.preferredTransform = transform
-        let params = AVMutableAudioMixInputParameters(track: a)
-        var at = CMTime.zero, joins: [CMTime] = []
-        for (start, end) in project.kept {
-            let range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600), end: CMTime(seconds: end, preferredTimescale: 600))
-            try v.insertTimeRange(range, of: video, at: at)
-            if let a, let sound { try a.insertTimeRange(range, of: sound, at: at) }
-            joins.append(at)
-            at = at + range.duration
+        let a = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        // Each clip gets its own video track, since each has its own rotation. Assets are kept alive while their tracks are used.
+        var assets: [AVURLAsset] = [], videos: [AVAssetTrack] = [], sounds: [AVAssetTrack?] = [], ids: [CMPersistentTrackID] = []
+        var turns: [CMPersistentTrackID: CGImagePropertyOrientation] = [:], first: CGSize?, rate: Float = 0
+        for clip in project.reel {
+            let asset = AVURLAsset(url: project.url(clip))
+            guard let video = try await asset.loadTracks(withMediaType: .video).first else { throw Captions.Failure(errorDescription: "A clip has no video") }
+            let clean = project.enhanceVoice && FileManager.default.fileExists(atPath: project.cleanVoice(clip).path)
+            let voice = clean ? AVURLAsset(url: project.cleanVoice(clip)) : asset
+            let (size, transform, fps) = try await video.load(.naturalSize, .preferredTransform, .nominalFrameRate)
+            let v = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+            v.preferredTransform = transform
+            // A video's rotation as an orientation: phones film sideways and store a 90° turn.
+            let angle = atan2(transform.b, transform.a) * 180 / .pi
+            let o: CGImagePropertyOrientation = abs(angle - 90) < 1 ? .right : abs(angle + 90) < 1 ? .left : abs(abs(angle) - 180) < 1 ? .down : .up
+            turns[v.trackID] = o
+            if first == nil { first = o == .right || o == .left ? CGSize(width: size.height, height: size.width) : size }
+            rate = max(rate, fps)
+            assets += [asset, voice]
+            videos.append(video)
+            sounds.append(try await voice.loadTracks(withMediaType: .audio).first)
+            ids.append(v.trackID)
         }
+        let starts = project.clipStarts, reel = project.reel
+        // Every kept stretch, split where clips meet, goes on its clip's track.
+        var at = CMTime.zero, pieces: [(at: CMTime, track: CMPersistentTrackID)] = []
+        for (start, end) in project.kept {
+            for k in reel.indices {
+                let lo = max(start, starts[k]), hi = min(end, starts[k] + reel[k].duration)
+                guard hi - lo > 0.04 else { continue }
+                let range = CMTimeRange(start: CMTime(seconds: lo - starts[k], preferredTimescale: 600), end: CMTime(seconds: hi - starts[k], preferredTimescale: 600))
+                try composition.track(withTrackID: ids[k])!.insertTimeRange(range, of: videos[k], at: at)
+                if let sound = sounds[k] { try a.insertTimeRange(range, of: sound, at: at) }
+                pieces.append((at, ids[k]))
+                at = at + range.duration
+            }
+        }
+        // Tracks left empty (a clip cut out entirely, or no sound at all) would make AVFoundation refuse the video.
+        for id in ids where !pieces.contains(where: { $0.track == id }) { composition.removeTrack(composition.track(withTrackID: id)!) }
+        ids = ids.filter { id in pieces.contains { $0.track == id } }
+        let hasSound = !a.segments.isEmpty
+        if !hasSound { composition.removeTrack(a) }
         if project.speed != 1 { // stretches video and sound together; the player and exporter keep the pitch
             composition.scaleTimeRange(CMTimeRange(start: .zero, duration: at), toDuration: CMTimeMultiplyByFloat64(at, multiplier: 1 / project.speed))
         }
+        let scaled = pieces.map { CMTimeMultiplyByFloat64($0.at, multiplier: 1 / project.speed) } + [composition.duration]
+        parts = pieces.indices.map { (CMTimeRange(start: scaled[$0], end: scaled[$0 + 1]), pieces[$0].track) }
+        clipJoins = pieces.indices.dropFirst().filter { pieces[$0].track != pieces[$0 - 1].track }.map { scaled[$0].seconds }
+        cutJoins = pieces.indices.dropFirst().map { scaled[$0].seconds }
         // A tiny fade at each cut, so joins don't click.
+        let params = AVMutableAudioMixInputParameters(track: a)
         let fade = CMTime(value: 1, timescale: 60), volume = Float(project.volume)
-        for (i, join) in joins.enumerated() {
-            let start = CMTimeMultiplyByFloat64(join, multiplier: 1 / project.speed)
-            let end = CMTimeMultiplyByFloat64(i + 1 < joins.count ? joins[i + 1] : at, multiplier: 1 / project.speed)
+        for (i, start) in scaled.dropLast().enumerated() {
             params.setVolumeRamp(fromStartVolume: 0, toEndVolume: volume, timeRange: CMTimeRange(start: start, duration: fade))
-            params.setVolumeRamp(fromStartVolume: volume, toEndVolume: 0, timeRange: CMTimeRange(start: end - fade, duration: fade))
+            params.setVolumeRamp(fromStartVolume: volume, toEndVolume: 0, timeRange: CMTimeRange(start: scaled[i + 1] - fade, duration: fade))
         }
         audioMix = AVMutableAudioMix()
-        audioMix.inputParameters = a == nil ? [] : [params]
+        audioMix.inputParameters = hasSound ? [params] : []
         // Music loops under the whole video, dipping while someone talks.
         let music = project.musicFile.flatMap { FileManager.default.fileExists(atPath: $0.path) ? AVURLAsset(url: $0) : nil } // kept alive: a track can't be read once its asset is gone
         if let music, let song = try await music.loadTracks(withMediaType: .audio).first,
@@ -360,12 +439,11 @@ struct Edit {
             }
             audioMix.inputParameters.append(mp)
         }
-        track = v.trackID
+        withExtendedLifetime(assets) {}
+        tracks = ids
+        orientations = turns
+        natural = first ?? CGSize(width: 1080, height: 1920)
         fps = rate > 0 ? min(60, rate) : 30
-        // A video's rotation as an orientation: phones film sideways and store a 90° turn.
-        let angle = atan2(transform.b, transform.a) * 180 / .pi
-        orientation = abs(angle - 90) < 1 ? .right : abs(angle + 90) < 1 ? .left : abs(abs(angle) - 180) < 1 ? .down : .up
-        natural = orientation == .right || orientation == .left ? CGSize(width: size.height, height: size.width) : size
     }
 
     /// The frame size in the chosen shape: the chosen quality on the short side (at most 1080 for the preview).
@@ -378,12 +456,19 @@ struct Edit {
 
     func videoComposition(_ project: Project, export: Bool = false) -> AVMutableVideoComposition {
         let preset = Preset.named(project.preset)
-        let scene = Frame(project: project, preset: preset, lines: project.lines(maxWords: preset.maxWords), orientation: orientation, renderSize: renderSize(project, export: export))
+        let scene = Frame(project: project, preset: preset, lines: project.lines(maxWords: preset.maxWords), orientations: orientations,
+                          joins: project.transitionOnCuts ? cutJoins : clipJoins, renderSize: renderSize(project, export: export))
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = Compositor.self
         vc.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps.rounded()))
         vc.renderSize = scene.renderSize
-        vc.instructions = [Instruction(CMTimeRange(start: .zero, duration: composition.duration), track: track, scene: scene)]
+        // Back-to-back pieces of one clip share an instruction.
+        var runs: [(CMTimeRange, CMPersistentTrackID)] = []
+        for (range, track) in parts {
+            if let last = runs.last, last.1 == track { runs[runs.count - 1].0 = CMTimeRange(start: last.0.start, end: range.end) } else { runs.append((range, track)) }
+        }
+        if runs.isEmpty, let track = tracks.first { runs = [(CMTimeRange(start: .zero, duration: composition.duration), track)] }
+        vc.instructions = runs.map { Instruction($0.0, track: $0.1, all: tracks, scene: scene) }
         return vc
     }
 }

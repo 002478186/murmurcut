@@ -9,6 +9,9 @@ enum DebugLog {
 
     static func add(_ text: String) {
         let line = "\(Date().formatted(.iso8601)) [\(os_proc_available_memory() >> 20) MB free] \(text)\n"
+        #if DEBUG
+        print("LOG", text)
+        #endif
         queue.async {
             // Start over past 2 MB, so the log never grows without end.
             if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 2 << 20 { try? FileManager.default.removeItem(at: url) }

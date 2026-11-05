@@ -1,12 +1,14 @@
 import AVFoundation
+import PhotosUI
 import SwiftUI
+import Translation
 
 struct EditorView: View {
     enum Tool: String, CaseIterable {
-        case captions = "Captions", style = "Style", text = "Text", audio = "Audio", edit = "Edit", filters = "Filters", format = "Format"
+        case captions = "Captions", style = "Style", broll = "B-roll", text = "Text", audio = "Audio", edit = "Edit", filters = "Filters", format = "Format"
         var icon: String {
-            ["Captions": "captions.bubble", "Style": "textformat", "Text": "character.textbox", "Audio": "waveform", "Edit": "scissors",
-             "Filters": "camera.filters", "Format": "aspectratio"][rawValue]!
+            ["Captions": "captions.bubble", "Style": "textformat", "B-roll": "photo.on.rectangle.angled", "Text": "character.textbox", "Audio": "waveform",
+             "Edit": "scissors", "Filters": "camera.filters", "Format": "aspectratio"][rawValue]!
         }
     }
     struct WordRef: Identifiable { let id: Int }
@@ -29,6 +31,19 @@ struct EditorView: View {
     @State private var writing: Overlay? // the overlay whose words are being typed
     @State private var pickingMusic = false
     @State private var enhancing = false
+    @State private var pickedClip: PhotosPickerItem?
+    @State private var addingClip = false
+    @State private var translating: TranslationSession.Configuration?
+    @State private var translatingTo = ""
+    @State private var brollNote: String? // progress of Auto B-roll
+    @State private var broll: UUID? // the moment being changed
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var searching: Broll? // the moment getting a new search
+    @AppStorage("giphyKey") private var giphyKey = ""
+    @AppStorage("pexelsKey") private var pexelsKey = ""
+
+    static let targets = [("en", "English"), ("hi", "Hindi"), ("es", "Spanish"), ("fr", "French"), ("de", "German"), ("pt", "Portuguese"),
+                          ("ar", "Arabic"), ("ja", "Japanese"), ("ko", "Korean"), ("zh", "Chinese")]
 
     private var preset: Preset { Preset.named(project.preset) }
 
@@ -67,6 +82,23 @@ struct EditorView: View {
             TextSheet(text: o.text) { text in
                 if let i = project.texts.firstIndex(where: { $0.id == o.id }) { change { $0.texts[i].text = text } } else { change { var n = o; n.text = text; $0.texts.append(n) } }
                 overlay = o.id
+            }
+        }
+        .translationTask(translating) { session in await translate(with: session) }
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            Task { await addPhoto(item); pickedPhoto = nil }
+        }
+        .sheet(item: $searching) { b in
+            TextSheet(text: b.query) { q in Task { await research(b.id, query: q) } }
+        }
+        .onChange(of: pickedClip) { _, item in
+            guard let item else { return }
+            Task {
+                addingClip = true
+                if let movie = try? await item.loadTransferable(type: Movie.self) { await addClip(movie.url) }
+                addingClip = false
+                pickedClip = nil
             }
         }
         .fileImporter(isPresented: $pickingMusic, allowedContentTypes: [.audio]) { result in
@@ -185,7 +217,13 @@ struct EditorView: View {
         transcribing = true
         UIApplication.shared.isIdleTimerDisabled = true
         do {
-            let (words, heard) = try await Captions.transcribe(project.video, language: project.language)
+            // Each clip is heard on its own; the language found in the first is used for the rest.
+            var words: [Word] = [], heard = project.language
+            for (clip, start) in zip(project.reel, project.clipStarts) {
+                let (w, h) = try await Captions.transcribe(project.url(clip), language: heard)
+                words += w.map { Word(text: $0.text, start: $0.start + start, end: $0.end + start) }
+                heard = h
+            }
             UserDefaults.standard.set(project.language, forKey: "spokenLanguage") // new videos start in the last language used
             DebugLog.add("captions: \(words.count) words in \(heard)")
             change { $0.words = words; $0.heard = heard; $0.captioned = true }
@@ -220,7 +258,7 @@ struct EditorView: View {
 
     private func refresh(from before: Project) {
         guard let edit else { return }
-        let sameSound = before.speed == project.speed && before.volume == project.volume && before.enhanceVoice == project.enhanceVoice
+        let sameSound = before.clips == project.clips && before.speed == project.speed && before.volume == project.volume && before.enhanceVoice == project.enhanceVoice
             && before.music == project.music && before.musicVolume == project.musicVolume && before.duck == project.duck
         if before.kept.map({ [$0.0, $0.1] }) == project.kept.map({ [$0.0, $0.1] }) && sameSound {
             player.currentItem?.videoComposition = edit.videoComposition(project)
@@ -243,21 +281,24 @@ struct EditorView: View {
     // MARK: Tools
 
     private var toolbar: some View {
-        HStack {
-            ForEach(Tool.allCases, id: \.self) { t in
-                Button { tool = t } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: t.icon).font(.system(size: 20, weight: .semibold))
-                        Text(t.rawValue).font(.caption2.weight(.semibold))
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(Tool.allCases, id: \.self) { t in
+                    Button { tool = t } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: t.icon).font(.system(size: 20, weight: .semibold))
+                            Text(t.rawValue).font(.caption2.weight(.semibold)).lineLimit(1)
+                        }
+                        .frame(minWidth: 54, maxWidth: .infinity, minHeight: 52)
+                        .foregroundStyle(tool == t ? AnyShapeStyle(Theme.brand) : AnyShapeStyle(Theme.muted))
                     }
-                    .frame(maxWidth: .infinity, minHeight: 52)
-                    .foregroundStyle(tool == t ? AnyShapeStyle(Theme.brand) : AnyShapeStyle(Theme.muted))
+                    .buttonStyle(.plain)
+                    .sensoryFeedback(.selection, trigger: tool)
                 }
-                .buttonStyle(.plain)
-                .sensoryFeedback(.selection, trigger: tool)
             }
+            .containerRelativeFrame(.horizontal) { w, _ in max(w, 54 * Double(Tool.allCases.count)) } // fills the bar; scrolls on narrow phones
         }
-        .padding(.horizontal, 8).padding(.top, 6)
+        .padding(.horizontal, 4).padding(.top, 6)
         .background(Theme.surface.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Theme.line.frame(height: 1) }
     }
@@ -267,6 +308,7 @@ struct EditorView: View {
             switch tool {
             case .captions: captionsTool
             case .style: styleTool
+            case .broll: brollTool
             case .text: textTool
             case .audio: audioTool
             case .edit: ScrollView { VStack(alignment: .leading, spacing: 14) { editTool; cutsTool } }
@@ -280,16 +322,31 @@ struct EditorView: View {
 
     @ViewBuilder private var captionsTool: some View {
         HStack {
-            Text(project.words.isEmpty ? "No captions yet" : project.language == "auto" && project.heard != nil
+            Text(project.words.isEmpty ? "No captions yet" : translating != nil ? "Translating…"
+                 : project.showTranslation && !project.translation.isEmpty ? "Showing the \(Self.targets.first { $0.0 == project.translatedTo }?.1 ?? "") translation"
+                 : project.language == "auto" && project.heard != nil
                  ? "Heard \(Self.languageName(project.heard!)) · tap a word to fix it" : "Tap a word to fix or cut it")
                 .font(.subheadline).foregroundStyle(Theme.muted)
             Spacer()
             if project.captioned {
                 Menu {
+                    Menu("Translate captions", systemImage: "globe") {
+                        ForEach(Self.targets, id: \.0) { code, name in
+                            Button(name) {
+                                let from = Captions.codes.first { $0.value == (project.heard ?? project.language) }?.key
+                                translatingTo = code
+                                translating = TranslationSession.Configuration(source: from.map { Locale.Language(identifier: $0) }, target: Locale.Language(identifier: code))
+                            }
+                        }
+                    }
+                    if !project.translation.isEmpty {
+                        Toggle("Show translation", systemImage: "character.bubble", isOn: bind(\.showTranslation))
+                    }
+                    Divider()
                     languagePicker
                     Button("Redo captions", systemImage: "arrow.clockwise") { Task { await transcribe() } }
-                } label: { Label("Redo", systemImage: "arrow.clockwise").font(.subheadline.bold()) }
-                .disabled(transcribing)
+                } label: { Label("More", systemImage: "ellipsis.circle").font(.subheadline.bold()) }
+                .disabled(transcribing || translating != nil)
             }
         }
         let keep = project.kept
@@ -338,6 +395,44 @@ struct EditorView: View {
     }
 
     @ViewBuilder private var editTool: some View {
+                Text("Clips").font(.subheadline).foregroundStyle(Theme.muted)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(project.reel.indices, id: \.self) { i in
+                            let n = project.reel.count
+                            Menu {
+                                Button("Move left", systemImage: "arrow.left") { move(i, by: -1) }.disabled(i == 0)
+                                Button("Move right", systemImage: "arrow.right") { move(i, by: 1) }.disabled(i == n - 1)
+                                Button("Delete clip", systemImage: "trash", role: .destructive) { change { $0 = $0.rearranged(Array(0..<n).filter { $0 != i }) } }.disabled(n == 1)
+                            } label: {
+                                Label("\(i + 1) · \(stamp(project.reel[i].duration))", systemImage: "film")
+                                    .font(.subheadline.weight(.semibold)).padding(.horizontal, 14).frame(minHeight: 40)
+                                    .background(Theme.surface, in: .capsule).overlay(Capsule().strokeBorder(Theme.line))
+                            }
+                        }
+                        PhotosPicker(selection: $pickedClip, matching: .videos) {
+                            Label(addingClip ? "Adding…" : "Add clip", systemImage: "plus").font(.subheadline.bold()).padding(.horizontal, 14).frame(minHeight: 40)
+                                .background(Theme.raised, in: .capsule)
+                        }
+                        .disabled(addingClip)
+                    }
+                }
+                HStack {
+                    Chip(title: "Split", icon: "scissors") { let t = project.sourceTime(time); change { $0.splits.append(t) } }
+                    Chip(title: "Delete part", icon: "trash") { deletePart() }
+                    if !project.removed.isEmpty { Chip(title: "Restore", icon: "arrow.uturn.backward") { change { $0.removed = [] } } }
+                }
+                Text("Split at the playhead, then delete the part it's in.").font(.footnote).foregroundStyle(Theme.muted)
+                Text("Transition").font(.subheadline).foregroundStyle(Theme.muted)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack { ForEach(["None", "Fade", "Flash", "Zoom", "Blur"], id: \.self) { k in Chip(title: k, selected: project.transition == k) { change { $0.transition = k } } } }
+                }
+                if project.transition != "None" {
+                    Toggle(isOn: bind(\.transitionOnCuts)) {
+                        Text("On every jump cut too")
+                        Text(project.reel.count > 1 ? "Not just between clips" : "With one clip, transitions play at cuts")
+                    }
+                }
                 slider("Start \(stamp(project.trimIn * project.duration))", Binding(get: { project.trimIn }, set: { v in change(\Project.trimIn) { $0.trimIn = min(v, $0.trimOut - 0.02) } }), 0...0.98)
                 slider("End \(stamp(project.trimOut * project.duration))", Binding(get: { project.trimOut }, set: { v in change(\Project.trimOut) { $0.trimOut = max(v, $0.trimIn + 0.02) } }), 0.02...1)
                 Text("Speed").font(.subheadline).foregroundStyle(Theme.muted)
@@ -435,16 +530,181 @@ struct EditorView: View {
     }
 
     private func enhance(_ on: Bool) async {
-        if on && !FileManager.default.fileExists(atPath: project.cleanVoice.path) {
+        if on {
             enhancing = true
             defer { enhancing = false }
-            do { try await Voice.enhance(project.video, to: project.cleanVoice) } catch {
-                DebugLog.add("voice: failed: \(error)")
-                failure = error.localizedDescription
-                return
+            for clip in project.reel where !FileManager.default.fileExists(atPath: project.cleanVoice(clip).path) {
+                do { try await Voice.enhance(project.url(clip), to: project.cleanVoice(clip)) } catch {
+                    DebugLog.add("voice: failed: \(error)")
+                    failure = error.localizedDescription
+                    return
+                }
             }
         }
         change { $0.enhanceVoice = on }
+    }
+
+    /// Every sentence translated on the phone, each timed like the sentence it came from.
+    private func translate(with session: TranslationSession) async {
+        defer { translating = nil }
+        let sentences = project.sentences
+        let asks = sentences.indices.map { TranslationSession.Request(sourceText: sentences[$0].map(\.text).joined(separator: " "), clientIdentifier: String($0)) }
+        do {
+            var out: [Word] = []
+            for reply in try await session.translations(from: asks) {
+                guard let i = reply.clientIdentifier.flatMap(Int.init), let s = sentences[safe: i], let first = s.first, let last = s.last else { continue }
+                out += Project.spread(reply.targetText, from: first.start, to: last.end)
+            }
+            let code = translatingTo
+            change { $0.translation = out.sorted { $0.start < $1.start }; $0.translatedTo = code; $0.showTranslation = true }
+            DebugLog.add("captions: translated \(sentences.count) sentences to \(code)")
+        } catch {
+            DebugLog.add("captions: translation failed: \(error)")
+            failure = "Couldn't translate: \(error.localizedDescription)"
+        }
+    }
+
+    @ViewBuilder private var brollTool: some View {
+        HStack {
+            Button(brollNote ?? (project.brolls.isEmpty ? "Auto B-roll" : "Redo B-roll"), systemImage: "sparkles") { Task { await autoBroll() } }
+                .buttonStyle(BrandButton()).controlSize(.small)
+                .disabled(brollNote != nil || project.words.isEmpty)
+            PhotosPicker(selection: $pickedPhoto, matching: .images) { Image(systemName: "photo.badge.plus").font(.title3).frame(width: 44, height: 44) }
+                .accessibilityLabel("Add a photo here")
+        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if project.words.isEmpty {
+                    Text("Make captions first: B-roll is picked from what you say.").font(.footnote).foregroundStyle(Theme.muted)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(project.brolls) { b in
+                            Chip(title: "\(stamp(b.start)) \(b.query)", icon: ["gif": "play.square", "meme": "face.smiling", "text": "textformat"][b.kind] ?? "photo", selected: b.id == broll) {
+                                broll = b.id; seek(b.start + 0.3)
+                            }
+                        }
+                    }
+                }
+                if let i = project.brolls.firstIndex(where: { $0.id == broll }) {
+                    let b = project.brolls[i]
+                    HStack {
+                        ForEach(["full": "Full", "card": "Card", "blur": "Blur"].sorted { $0.key > $1.key }, id: \.key) { k, name in
+                            Chip(title: name, selected: b.mode == k) { change { $0.brolls[i].mode = k } }
+                        }
+                    }
+                    HStack {
+                        Chip(title: "Next", icon: "arrow.right.circle") { Task { await next(b.id) } }.disabled(b.options.count < 2)
+                        Chip(title: "Search", icon: "magnifyingglass") { searching = b }
+                        Chip(title: "Delete", icon: "trash") { broll = nil; change { $0.brolls.remove(at: i) } }
+                    }
+                    HStack {
+                        Chip(title: "Start here", icon: "arrow.right.to.line") { change { $0.brolls[i].start = min(time, $0.brolls[i].end - 0.3) } }
+                        Chip(title: "End here", icon: "arrow.left.to.line") { change { $0.brolls[i].end = max(time, $0.brolls[i].start + 0.3) } }
+                    }
+                    if !b.credit.isEmpty { Text(b.credit).font(.caption2).foregroundStyle(Theme.muted).lineLimit(2) }
+                }
+                DisclosureGroup("GIFs, memes and more photos") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Photos come free from Wikipedia and Wikimedia Commons. For GIFs and memes, paste a free GIPHY key (developers.giphy.com); for more photos, a Pexels key (pexels.com/api).")
+                            .font(.footnote).foregroundStyle(Theme.muted)
+                        TextField("GIPHY key", text: $giphyKey).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                        TextField("Pexels key", text: $pexelsKey).textFieldStyle(.roundedBorder).autocorrectionDisabled().textInputAutocapitalization(.never)
+                    }
+                    .padding(.top, 6)
+                }
+                .font(.subheadline.bold())
+            }
+        }
+    }
+
+    /// Reads every sentence, picks the moments worth a visual, then finds and downloads a picture for each.
+    private func autoBroll() async {
+        brollNote = "Reading your sentences…"
+        defer { brollNote = nil }
+        let keepOwn = project.brolls.filter { $0.credit == "Your photo" }
+        var moments = await BRoll.plan(project)
+        DebugLog.add("broll: \(moments.count) moments: \(moments.map(\.query).joined(separator: ", "))")
+        for i in moments.indices {
+            brollNote = "Finding pictures \(i + 1) of \(moments.count)…"
+            moments[i].options = await BRoll.search(moments[i].query, kind: moments[i].kind)
+            moments[i] = await BRoll.fetch(moments[i], into: project.folder)
+        }
+        for old in project.brolls where !keepOwn.contains(old) { if let f = old.file { try? FileManager.default.removeItem(at: project.folder.appendingPathComponent(f)) } }
+        change { $0.brolls = (keepOwn + moments).sorted { $0.start < $1.start } }
+        broll = nil
+        if moments.isEmpty { failure = "Nothing in this video needed a picture. Add your own with the photo button." }
+    }
+
+    private func next(_ id: UUID) async {
+        guard var b = project.brolls.first(where: { $0.id == id }) else { return }
+        b.pick = (b.pick + 1) % max(1, b.options.count)
+        let got = await BRoll.fetch(b, into: project.folder)
+        change { p in if let i = p.brolls.firstIndex(where: { $0.id == id }) { p.brolls[i] = got } }
+    }
+
+    private func research(_ id: UUID, query: String) async {
+        guard var b = project.brolls.first(where: { $0.id == id }) else { return }
+        brollNote = "Searching…"
+        defer { brollNote = nil }
+        b.query = query; b.pick = 0
+        b.options = await BRoll.search(query, kind: b.kind == "text" ? "photo" : b.kind)
+        let got = await BRoll.fetch(b, into: project.folder)
+        change { p in if let i = p.brolls.firstIndex(where: { $0.id == id }) { p.brolls[i] = got } }
+        if got.file == nil { failure = "Nothing was found for \"\(query)\"." }
+    }
+
+    /// One of your own photos at the playhead, for three seconds.
+    private func addPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.85) else { return }
+        var b = Broll(start: time, end: min(project.outputDuration, time + 3), query: "photo", mode: "full")
+        b.file = "broll-\(b.id.uuidString.prefix(8)).jpg"
+        b.credit = "Your photo"
+        guard (try? jpeg.write(to: project.folder.appendingPathComponent(b.file!))) != nil else { return }
+        change { $0.brolls = ($0.brolls + [b]).sorted { $0.start < $1.start } }
+        broll = b.id
+    }
+
+    private func move(_ i: Int, by step: Int) {
+        var order = Array(project.reel.indices)
+        order.swapAt(i, i + step)
+        change { $0 = $0.rearranged(order) }
+    }
+
+    private func deletePart() {
+        let (a, b) = project.part(at: project.sourceTime(time))
+        guard project.outputDuration - (b - a) / project.speed > 0.5 else { failure = "That would delete the whole video."; return }
+        change { $0.removed.append([a, b]) }
+        DebugLog.add("edit: deleted \(String(format: "%.1f-%.1f", a, b))")
+    }
+
+    /// Puts another video at the end, captioned like the rest.
+    private func addClip(_ url: URL) async {
+        let name = "clip-\(UUID().uuidString.prefix(8)).mov"
+        do {
+            try FileManager.default.moveItem(at: url, to: project.folder.appendingPathComponent(name))
+            let length = try await AVURLAsset(url: project.folder.appendingPathComponent(name)).load(.duration).seconds
+            let start = project.duration
+            change { p in
+                let old = p.duration
+                p.clips = p.reel + [Clip(file: name, duration: length)]
+                p.duration = old + length
+                p.trimIn *= old / p.duration // trims stay where they were in the first clips
+                if p.trimOut < 1 { p.trimOut *= old / p.duration }
+            }
+            DebugLog.add("edit: added a \(Int(length)) s clip")
+            guard let clip = project.clips.last else { return }
+            if project.enhanceVoice { try? await Voice.enhance(project.url(clip), to: project.cleanVoice(clip)); refresh(from: Project()) }
+            if project.captioned {
+                transcribing = true
+                defer { transcribing = false }
+                let (w, _) = try await Captions.transcribe(project.url(clip), language: project.heard ?? project.language)
+                change { $0.words += w.map { Word(text: $0.text, start: $0.start + start, end: $0.end + start) } }
+            }
+        } catch {
+            DebugLog.add("edit: couldn't add a clip: \(error)")
+            failure = error.localizedDescription
+        }
     }
 
     private func addMusic(_ url: URL) {
@@ -510,6 +770,10 @@ struct EditorView: View {
     }
 
     @ViewBuilder private var formatTool: some View {
+        Text("Background").font(.subheadline).foregroundStyle(Theme.muted)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack { ForEach(Compositor.backgrounds, id: \.self) { b in Chip(title: b == "Keep" ? "Original" : b, selected: project.background == b) { change { $0.background = b } } } }
+        }
         Text("Export quality").font(.subheadline).foregroundStyle(Theme.muted)
         HStack { ForEach([720, 1080, 2160], id: \.self) { q in Chip(title: q == 2160 ? "4K" : "\(q)p", selected: project.quality == q) { change { $0.quality = q } } } }
         Text("Shape").font(.subheadline).foregroundStyle(Theme.muted)

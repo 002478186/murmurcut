@@ -22,7 +22,13 @@ final class RenderTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: p.folder.appendingPathComponent("song.m4a"), withDestinationURL: song)
         for change in [{ (_: inout Project) in }, { $0.cutPauses = true; $0.cutFillers = true; $0.fit = true; $0.preset = "Editorial" },
                        { $0.speed = 1.5; $0.filter = "Cinematic"; $0.turns = 1; $0.mirror = true; $0.trimIn = 0.1; $0.trimOut = 0.5 },
-                       { $0.music = "song.m4a"; $0.texts = [Overlay(text: "Making keys at Walmart", start: 0, end: 5)]; $0.quality = 720 }] {
+                       { $0.music = "song.m4a"; $0.texts = [Overlay(text: "Making keys at Walmart", start: 0, end: 5)]; $0.quality = 720 },
+                       { // two clips (the second one the 20 s song's video twin), a deleted part, transitions and a new background
+                           $0.clips = [Clip(file: "video.mov", duration: $0.duration), Clip(file: "video.mov", duration: $0.duration)]
+                           $0.duration *= 2
+                           $0 = $0.rearranged([1, 0])
+                           $0.removed = [[2, 5]]; $0.transition = "Fade"; $0.transitionOnCuts = true; $0.background = "Blur"; $0.trimIn = 0.48
+                       }] {
             var q = p
             change(&q)
             let edit = try await Edit(q)
